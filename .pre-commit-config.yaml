@@ -1,6 +1,3 @@
-default_language_version:
-  python: python3.8
-
 ci:
   autofix_prs: true
   autoupdate_commit_msg: '[pre-commit.ci] pre-commit suggestions'
@@ -8,63 +5,39 @@ ci:
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.0.1
+    rev: v4.5.0
     hooks:
       - id: end-of-file-fixer
       - id: trailing-whitespace
       - id: check-yaml
+      - id: requirements-txt-fixer
       - id: pretty-format-json
+        exclude: ^$|.devcontainer
 
-  - repo: https://github.com/psf/black
-    rev: 21.9b0
+  - repo: https://github.com/tox-dev/pyproject-fmt
+    rev: "1.5.3"
     hooks:
-      - id: black
-        args: [--diff]
+      - id: pyproject-fmt
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.1.11
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
 
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.1.0
+    rev: v2.2.6
     hooks:
       - id: codespell
         args:
           - --ignore-words-list
-          - "ans,hist"
+          - "ans,hist,laf,cofusion"
           - --skip
           - "*.bib,*.ipynb"
 
-  - repo: https://github.com/PyCQA/isort
-    rev: 5.9.3
-    hooks:
-      - id: isort
-
-  - repo: https://github.com/PyCQA/flake8
-    rev: 3.9.2
-    hooks:
-      - id: flake8
-
-  - repo: https://github.com/asottile/pyupgrade
-    rev: v2.28.0
-    hooks:
-      - id: pyupgrade
-        args: [--py36-plus]
-
-  - repo: https://github.com/PyCQA/bandit
-    rev: 1.7.0
-    hooks:
-      - id: bandit
-        language_version: python3
-        exclude: ^test/
-        args:
-          - -s
-          - "B404,B602,B603,B607"
-
-  - repo: https://github.com/myint/docformatter
-    rev: v1.4
+  - repo: https://github.com/PyCQA/docformatter
+    rev: v1.7.5
     hooks:
       - id: docformatter
         args: [--in-place, --wrap-summaries=115, --wrap-descriptions=120]
-
-  - repo: https://github.com/asottile/yesqa
-    rev: v1.2.3
-    hooks:
-      - id: yesqa
-        name: Unused noqa

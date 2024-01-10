@@ -2,7 +2,9 @@
 
 import torch
 
-import kornia
+from kornia.core import zeros
+from kornia.geometry.conversions import convert_points_from_homogeneous
+from kornia.utils.helpers import _torch_svd_cast
 
 # https://github.com/opencv/opencv_contrib/blob/master/modules/sfm/src/triangulation.cpp#L68
 
@@ -28,7 +30,6 @@ def triangulate_points(
 
     Returns:
         The reconstructed 3d points in the world frame with shape :math:`(*, N, 3)`.
-
     """
     if not (len(P1.shape) >= 2 and P1.shape[-2:] == (3, 4)):
         raise AssertionError(P1.shape)
@@ -47,7 +48,7 @@ def triangulate_points(
 
     # allocate and construct the equations matrix with shape (*, 4, 4)
     points_shape = max(points1.shape, points2.shape)  # this allows broadcasting
-    X = torch.zeros(points_shape[:-1] + (4, 4)).type_as(points1)
+    X = zeros(points_shape[:-1] + (4, 4)).type_as(points1)
 
     for i in range(4):
         X[..., 0, i] = points1[..., 0] * P1[..., 2:3, i] - P1[..., 0:1, i]
@@ -58,8 +59,8 @@ def triangulate_points(
     # 1. Solve the system Ax=0 with smallest eigenvalue
     # 2. Return homogeneous coordinates
 
-    _, _, V = torch.svd(X)
+    _, _, V = _torch_svd_cast(X)
 
     points3d_h = V[..., -1]
-    points3d: torch.Tensor = kornia.convert_points_from_homogeneous(points3d_h)
+    points3d: torch.Tensor = convert_points_from_homogeneous(points3d_h)
     return points3d

@@ -1,21 +1,27 @@
+from typing import Tuple
+
 import torch
+
+from kornia.core import Tensor
 
 
 @torch.no_grad()
-def warp_kpts(kpts0, depth0, depth1, T_0to1, K0, K1):
+def warp_kpts(
+    kpts0: Tensor, depth0: Tensor, depth1: Tensor, T_0to1: Tensor, K0: Tensor, K1: Tensor
+) -> Tuple[Tensor, Tensor]:
     """Warp kpts0 from I0 to I1 with depth, K and Rt Also check covisibility and depth consistency. Depth is
     consistent if relative error < 0.2 (hard-coded).
 
     Args:
-        kpts0 (torch.Tensor): [N, L, 2] - <x, y>,
-        depth0 (torch.Tensor): [N, H, W],
-        depth1 (torch.Tensor): [N, H, W],
-        T_0to1 (torch.Tensor): [N, 3, 4],
-        K0 (torch.Tensor): [N, 3, 3],
-        K1 (torch.Tensor): [N, 3, 3],
+        kpts0: [N, L, 2] - <x, y>,
+        depth0: [N, H, W],
+        depth1: [N, H, W],
+        T_0to1: [N, 3, 4],
+        K0: [N, 3, 3],
+        K1: [N, 3, 3],
     Returns:
-        calculable_mask (torch.Tensor): [N, L]
-        warped_keypoints0 (torch.Tensor): [N, L, 2] <x0_hat, y1_hat>
+        calculable_mask: [N, L]
+        warped_keypoints0: [N, L, 2] <x0_hat, y1_hat>
     """
     kpts0_long = kpts0.round().long()
 
@@ -30,7 +36,7 @@ def warp_kpts(kpts0, depth0, depth1, T_0to1, K0, K1):
     kpts0_cam = K0.inverse() @ kpts0_h.transpose(2, 1)  # (N, 3, L)
 
     # Rigid Transform
-    w_kpts0_cam = T_0to1[:, :3, :3] @ kpts0_cam + T_0to1[:, :3, [3]]    # (N, 3, L)
+    w_kpts0_cam = T_0to1[:, :3, :3] @ kpts0_cam + T_0to1[:, :3, [3]]  # (N, 3, L)
     w_kpts0_depth_computed = w_kpts0_cam[:, 2, :]
 
     # Project
@@ -39,8 +45,9 @@ def warp_kpts(kpts0, depth0, depth1, T_0to1, K0, K1):
 
     # Covisible Check
     h, w = depth1.shape[1:3]
-    covisible_mask = (w_kpts0[:, :, 0] > 0) * (w_kpts0[:, :, 0] < w - 1) * \
-        (w_kpts0[:, :, 1] > 0) * (w_kpts0[:, :, 1] < h - 1)
+    covisible_mask = (
+        (w_kpts0[:, :, 0] > 0) * (w_kpts0[:, :, 0] < w - 1) * (w_kpts0[:, :, 1] > 0) * (w_kpts0[:, :, 1] < h - 1)
+    )
     w_kpts0_long = w_kpts0.long()
     w_kpts0_long[~covisible_mask, :] = 0
 

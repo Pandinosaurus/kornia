@@ -3,15 +3,24 @@ from typing import List, Optional
 import torch
 import torch.nn.functional as F
 
+__all__ = ["dilation", "erosion", "opening", "closing", "gradient", "top_hat", "bottom_hat"]
+
+
+def _neight2channels_like_kernel(kernel: torch.Tensor) -> torch.Tensor:
+    h, w = kernel.size()
+    kernel = torch.eye(h * w, dtype=kernel.dtype, device=kernel.device)
+    return kernel.view(h * w, 1, h, w)
+
 
 def dilation(
     tensor: torch.Tensor,
     kernel: torch.Tensor,
     structuring_element: Optional[torch.Tensor] = None,
     origin: Optional[List[int]] = None,
-    border_type: str = 'geodesic',
+    border_type: str = "geodesic",
     border_value: float = 0.0,
     max_val: float = 1e4,
+    engine: str = "unfold",
 ) -> torch.Tensor:
     r"""Return the dilated image applying the same kernel in each channel.
 
@@ -33,13 +42,13 @@ def dilation(
             outside the image when applying the operation.
         border_value: Value to fill past edges of input if ``border_type`` is ``constant``.
         max_val: The value of the infinite elements in the kernel.
+        engine: convolution is faster and less memory hungry, and unfold is more stable numerically
 
     Returns:
         Dilated image with shape :math:`(B, C, H, W)`.
 
     .. note::
-       See a working example `here <https://kornia-tutorials.readthedocs.io/en/latest/
-       morphology_101.html>`__.
+       See a working example `here <https://kornia.github.io/tutorials/nbs/morphology_101.html>`__.
 
     Example:
         >>> tensor = torch.rand(1, 3, 5, 5)
@@ -66,9 +75,9 @@ def dilation(
 
     # pad
     pad_e: List[int] = [origin[1], se_w - origin[1] - 1, origin[0], se_h - origin[0] - 1]
-    if border_type == 'geodesic':
+    if border_type == "geodesic":
         border_value = -max_val
-        border_type = 'constant'
+        border_type = "constant"
     output: torch.Tensor = F.pad(tensor, pad_e, mode=border_type, value=border_value)
 
     # computation
@@ -79,11 +88,21 @@ def dilation(
         neighborhood = structuring_element.clone()
         neighborhood[kernel == 0] = -max_val
 
-    output = output.unfold(2, se_h, 1).unfold(3, se_w, 1)
-    output, _ = torch.max(output + neighborhood.flip((0, 1)), 4)
-    output, _ = torch.max(output, 4)
-
-    return output
+    if engine == "unfold":
+        output = output.unfold(2, se_h, 1).unfold(3, se_w, 1)
+        output, _ = torch.max(output + neighborhood.flip((0, 1)), 4)
+        output, _ = torch.max(output, 4)
+    elif engine == "convolution":
+        B, C, H, W = tensor.size()
+        h_pad, w_pad = output.shape[-2:]
+        reshape_kernel = _neight2channels_like_kernel(kernel)
+        output, _ = F.conv2d(
+            output.view(B * C, 1, h_pad, w_pad), reshape_kernel, padding=0, bias=neighborhood.view(-1).flip(0)
+        ).max(dim=1)
+        output = output.view(B, C, H, W)
+    else:
+        raise NotImplementedError(f"engine {engine} is unknown, use 'convolution' or 'unfold'")
+    return output.view_as(tensor)
 
 
 def erosion(
@@ -91,9 +110,10 @@ def erosion(
     kernel: torch.Tensor,
     structuring_element: Optional[torch.Tensor] = None,
     origin: Optional[List[int]] = None,
-    border_type: str = 'geodesic',
+    border_type: str = "geodesic",
     border_value: float = 0.0,
     max_val: float = 1e4,
+    engine: str = "unfold",
 ) -> torch.Tensor:
     r"""Return the eroded image applying the same kernel in each channel.
 
@@ -115,13 +135,13 @@ def erosion(
             outside the image when applying the operation.
         border_value: Value to fill past edges of input if border_type is ``constant``.
         max_val: The value of the infinite elements in the kernel.
+        engine: ``convolution`` is faster and less memory hungry, and ``unfold`` is more stable numerically
 
     Returns:
         Eroded image with shape :math:`(B, C, H, W)`.
 
     .. note::
-       See a working example `here <https://kornia-tutorials.readthedocs.io/en/latest/
-       morphology_101.html>`__.
+       See a working example `here <https://kornia.github.io/tutorials/nbs/morphology_101.html>`__.
 
     Example:
         >>> tensor = torch.rand(1, 3, 5, 5)
@@ -148,9 +168,9 @@ def erosion(
 
     # pad
     pad_e: List[int] = [origin[1], se_w - origin[1] - 1, origin[0], se_h - origin[0] - 1]
-    if border_type == 'geodesic':
+    if border_type == "geodesic":
         border_value = max_val
-        border_type = 'constant'
+        border_type = "constant"
     output: torch.Tensor = F.pad(tensor, pad_e, mode=border_type, value=border_value)
 
     # computation
@@ -161,9 +181,20 @@ def erosion(
         neighborhood = structuring_element.clone()
         neighborhood[kernel == 0] = -max_val
 
-    output = output.unfold(2, se_h, 1).unfold(3, se_w, 1)
-    output, _ = torch.min(output - neighborhood, 4)
-    output, _ = torch.min(output, 4)
+    if engine == "unfold":
+        output = output.unfold(2, se_h, 1).unfold(3, se_w, 1)
+        output, _ = torch.min(output - neighborhood, 4)
+        output, _ = torch.min(output, 4)
+    elif engine == "convolution":
+        B, C, H, W = tensor.size()
+        Hpad, Wpad = output.shape[-2:]
+        reshape_kernel = _neight2channels_like_kernel(kernel)
+        output, _ = F.conv2d(
+            output.view(B * C, 1, Hpad, Wpad), reshape_kernel, padding=0, bias=-neighborhood.view(-1)
+        ).min(dim=1)
+        output = output.view(B, C, H, W)
+    else:
+        raise NotImplementedError(f"engine {engine} is unknown, use 'convolution' or 'unfold'")
 
     return output
 
@@ -173,9 +204,10 @@ def opening(
     kernel: torch.Tensor,
     structuring_element: Optional[torch.Tensor] = None,
     origin: Optional[List[int]] = None,
-    border_type: str = 'geodesic',
+    border_type: str = "geodesic",
     border_value: float = 0.0,
     max_val: float = 1e4,
+    engine: str = "unfold",
 ) -> torch.Tensor:
     r"""Return the opened image, (that means, dilation after an erosion) applying the same kernel in each channel.
 
@@ -197,13 +229,13 @@ def opening(
             outside the image when applying the operation.
         border_value: Value to fill past edges of input if ``border_type`` is ``constant``.
         max_val: The value of the infinite elements in the kernel.
+        engine: convolution is faster and less memory hungry, and unfold is more stable numerically
 
     Returns:
        torch.Tensor: Opened image with shape :math:`(B, C, H, W)`.
 
     .. note::
-       See a working example `here <https://kornia-tutorials.readthedocs.io/en/latest/
-       morphology_101.html>`__.
+       See a working example `here <https://kornia.github.io/tutorials/nbs/morphology_101.html>`__.
 
     Example:
         >>> tensor = torch.rand(1, 3, 5, 5)
@@ -232,6 +264,7 @@ def opening(
             border_type=border_type,
             border_value=border_value,
             max_val=max_val,
+            engine=engine,
         ),
         kernel=kernel,
         structuring_element=structuring_element,
@@ -239,6 +272,7 @@ def opening(
         border_type=border_type,
         border_value=border_value,
         max_val=max_val,
+        engine=engine,
     )
 
 
@@ -247,9 +281,10 @@ def closing(
     kernel: torch.Tensor,
     structuring_element: Optional[torch.Tensor] = None,
     origin: Optional[List[int]] = None,
-    border_type: str = 'geodesic',
+    border_type: str = "geodesic",
     border_value: float = 0.0,
     max_val: float = 1e4,
+    engine: str = "unfold",
 ) -> torch.Tensor:
     r"""Return the closed image, (that means, erosion after a dilation) applying the same kernel in each channel.
 
@@ -271,13 +306,13 @@ def closing(
             outside the image when applying the operation.
         border_value: Value to fill past edges of input if ``border_type`` is ``constant``.
         max_val: The value of the infinite elements in the kernel.
+        engine: convolution is faster and less memory hungry, and unfold is more stable numerically
 
     Returns:
        Closed image with shape :math:`(B, C, H, W)`.
 
     .. note::
-       See a working example `here <https://kornia-tutorials.readthedocs.io/en/latest/
-       morphology_101.html>`__.
+       See a working example `here <https://kornia.github.io/tutorials/nbs/morphology_101.html>`__.
 
     Example:
         >>> tensor = torch.rand(1, 3, 5, 5)
@@ -306,6 +341,7 @@ def closing(
             border_type=border_type,
             border_value=border_value,
             max_val=max_val,
+            engine=engine,
         ),
         kernel=kernel,
         structuring_element=structuring_element,
@@ -313,6 +349,7 @@ def closing(
         border_type=border_type,
         border_value=border_value,
         max_val=max_val,
+        engine=engine,
     )
 
 
@@ -322,9 +359,10 @@ def gradient(
     kernel: torch.Tensor,
     structuring_element: Optional[torch.Tensor] = None,
     origin: Optional[List[int]] = None,
-    border_type: str = 'geodesic',
+    border_type: str = "geodesic",
     border_value: float = 0.0,
     max_val: float = 1e4,
+    engine: str = "unfold",
 ) -> torch.Tensor:
     r"""Return the morphological gradient of an image.
 
@@ -347,13 +385,13 @@ def gradient(
             outside the image when applying the operation.
         border_value: Value to fill past edges of input if ``border_type`` is ``constant``.
         max_val: The value of the infinite elements in the kernel.
+        engine: convolution is faster and less memory hungry, and unfold is more stable numerically
 
     Returns:
        Gradient image with shape :math:`(B, C, H, W)`.
 
     .. note::
-       See a working example `here <https://kornia-tutorials.readthedocs.io/en/latest/
-       morphology_101.html>`__.
+       See a working example `here <https://kornia.github.io/tutorials/nbs/morphology_101.html>`__.
 
     Example:
         >>> tensor = torch.rand(1, 3, 5, 5)
@@ -369,6 +407,7 @@ def gradient(
         border_type=border_type,
         border_value=border_value,
         max_val=max_val,
+        engine=engine,
     ) - erosion(
         tensor,
         kernel=kernel,
@@ -377,6 +416,7 @@ def gradient(
         border_type=border_type,
         border_value=border_value,
         max_val=max_val,
+        engine=engine,
     )
 
 
@@ -385,9 +425,10 @@ def top_hat(
     kernel: torch.Tensor,
     structuring_element: Optional[torch.Tensor] = None,
     origin: Optional[List[int]] = None,
-    border_type: str = 'geodesic',
+    border_type: str = "geodesic",
     border_value: float = 0.0,
     max_val: float = 1e4,
+    engine: str = "unfold",
 ) -> torch.Tensor:
     r"""Return the top hat transformation of an image.
 
@@ -412,13 +453,13 @@ def top_hat(
             outside the image when applying the operation.
         border_value: Value to fill past edges of input if ``border_type`` is ``constant``.
         max_val: The value of the infinite elements in the kernel.
+        engine: convolution is faster and less memory hungry, and unfold is more stable numerically
 
     Returns:
        Top hat transformed image with shape :math:`(B, C, H, W)`.
 
     .. note::
-       See a working example `here <https://kornia-tutorials.readthedocs.io/en/latest/
-       morphology_101.html>`__.
+       See a working example `here <https://kornia.github.io/tutorials/nbs/morphology_101.html>`__.
 
     Example:
         >>> tensor = torch.rand(1, 3, 5, 5)
@@ -446,6 +487,7 @@ def top_hat(
         border_type=border_type,
         border_value=border_value,
         max_val=max_val,
+        engine=engine,
     )
 
 
@@ -454,9 +496,10 @@ def bottom_hat(
     kernel: torch.Tensor,
     structuring_element: Optional[torch.Tensor] = None,
     origin: Optional[List[int]] = None,
-    border_type: str = 'geodesic',
+    border_type: str = "geodesic",
     border_value: float = 0.0,
     max_val: float = 1e4,
+    engine: str = "unfold",
 ) -> torch.Tensor:
     r"""Return the bottom hat transformation of an image.
 
@@ -481,13 +524,13 @@ def bottom_hat(
             outside the image when applying the operation.
         border_value: Value to fill past edges of input if ``border_type`` is ``constant``.
         max_val: The value of the infinite elements in the kernel.
+        engine: convolution is faster and less memory hungry, and unfold is more stable numerically
 
     Returns:
        Top hat transformed image with shape :math:`(B, C, H, W)`.
 
     .. note::
-       See a working example `here <https://kornia-tutorials.readthedocs.io/en/latest/
-       morphology_101.html>`__.
+       See a working example `here <https://kornia.github.io/tutorials/nbs/morphology_101.html>`__.
 
     Example:
         >>> tensor = torch.rand(1, 3, 5, 5)
@@ -516,6 +559,7 @@ def bottom_hat(
             border_type=border_type,
             border_value=border_value,
             max_val=max_val,
+            engine=engine,
         )
         - tensor
     )

@@ -3,7 +3,7 @@ import torch
 from torch.autograd import gradcheck
 
 import kornia
-from kornia.testing import assert_close, BaseTester
+from kornia.testing import BaseTester
 
 
 class TestRgbToYcbcr(BaseTester):
@@ -16,6 +16,13 @@ class TestRgbToYcbcr(BaseTester):
     def test_cardinality(self, device, dtype, shape):
         img = torch.ones(shape, device=device, dtype=dtype)
         assert kornia.color.rgb_to_ycbcr(img).shape == shape
+
+    @pytest.mark.parametrize("shape", [(3, 4, 4), (2, 3, 4, 4)])
+    def test_rgb_to_y(self, device, dtype, shape):
+        img = torch.rand(*shape, device=device, dtype=dtype)
+        output_y = kornia.color.rgb_to_y(img)
+        output_ycbcr = kornia.color.rgb_to_ycbcr(img)
+        assert torch.equal(output_y, output_ycbcr[..., 0:1, :, :])
 
     def test_exception(self, device, dtype):
         with pytest.raises(TypeError):
@@ -91,33 +98,32 @@ class TestRgbToYcbcr(BaseTester):
             dtype=dtype,
         )
 
-        assert_close(kornia.color.rgb_to_ycbcr(data), expected, atol=1e-4, rtol=1e-4)
+        self.assert_close(kornia.color.rgb_to_ycbcr(data), expected, low_tolerance=True)
 
     # TODO: investigate and implement me
     # def test_forth_and_back(self, device, dtype):
     #    pass
 
-    @pytest.mark.grad
+    @pytest.mark.grad()
     def test_gradcheck(self, device, dtype):
         B, C, H, W = 2, 3, 4, 4
         img = torch.rand(B, C, H, W, device=device, dtype=torch.float64, requires_grad=True)
-        assert gradcheck(kornia.color.rgb_to_ycbcr, (img,), raise_exception=True)
+        assert gradcheck(kornia.color.rgb_to_ycbcr, (img,), raise_exception=True, fast_mode=True)
 
-    @pytest.mark.jit
+    @pytest.mark.jit()
     def test_jit(self, device, dtype):
         B, C, H, W = 2, 3, 4, 4
         img = torch.ones(B, C, H, W, device=device, dtype=dtype)
         op = kornia.color.rgb_to_ycbcr
         op_jit = torch.jit.script(op)
-        assert_close(op(img), op_jit(img))
+        self.assert_close(op(img), op_jit(img))
 
-    @pytest.mark.nn
     def test_module(self, device, dtype):
         B, C, H, W = 2, 3, 4, 4
         img = torch.ones(B, C, H, W, device=device, dtype=dtype)
         ops = kornia.color.RgbToYcbcr().to(device, dtype)
         fcn = kornia.color.rgb_to_ycbcr
-        assert_close(ops(img), fcn(img))
+        self.assert_close(ops(img), fcn(img))
 
 
 class TestYcbcrToRgb(BaseTester):
@@ -179,25 +185,25 @@ class TestYcbcrToRgb(BaseTester):
             [
                 [
                     [
-                        [1.3226931, 0.5639256, 0.14902398, 1.0217545, 0.2569923],
-                        [0.37973762, 0.64386904, 1.1992811, -0.603531, 0.4239992],
-                        [1.0080798, 1.3131194, -0.1370286, 0.60653293, 0.3505922],
-                        [-0.4573757, 0.6076593, 0.33508536, 0.27470887, 1.2284023],
-                        [0.52727354, -0.1673561, 0.05404532, 1.2725366, 0.5783674],
+                        [1.0000, 0.5639256, 0.14902398, 1.0000, 0.2569923],
+                        [0.37973762, 0.64386904, 1.0000, 0.0000, 0.4239992],
+                        [1.0000, 1.0000, 0.0000, 0.60653293, 0.3505922],
+                        [0.0000, 0.6076593, 0.33508536, 0.27470887, 1.0000],
+                        [0.52727354, 0.0000, 0.05404532, 1.0000, 0.5783674],
                     ],
                     [
-                        [0.736647, -0.01305042, 0.55139434, 0.44206098, 0.4548782],
-                        [-0.22063601, 0.98196536, 0.54739904, 0.33826917, 0.850068],
-                        [0.72412336, 0.6222996, 0.110618, 1.0039049, 0.614918],
+                        [0.736647, 0.0000, 0.55139434, 0.44206098, 0.4548782],
+                        [0.0000, 0.98196536, 0.54739904, 0.33826917, 0.850068],
+                        [0.72412336, 0.6222996, 0.110618, 1.0000, 0.614918],
                         [0.15862459, 0.0699634, 0.66296846, 0.4845066, 0.3705502],
-                        [1.0145653, 0.46070462, 0.5654058, 0.24897486, -0.11174999],
+                        [1.0000, 0.46070462, 0.5654058, 0.24897486, 0.0000],
                     ],
                     [
-                        [1.4161384, 0.88769174, 0.4394987, -0.31889397, -0.5671302],
-                        [0.77483994, 0.99839956, 1.6813064, 0.41622213, 1.3508832],
-                        [0.7488585, -0.04955059, 0.01748962, 0.9683316, 0.49795526],
-                        [0.9473541, 1.2473994, -0.3918787, 0.47037587, 1.2893858],
-                        [1.4082898, -0.21875012, 0.6804801, 0.9795798, 0.24646705],
+                        [1.0000, 0.88769174, 0.4394987, 0.0000, 0.0000],
+                        [0.77483994, 0.99839956, 1.0000, 0.41622213, 1.0000],
+                        [0.7488585, 0.0000, 0.01748962, 0.9683316, 0.49795526],
+                        [0.9473541, 1.0000, 0.0000, 0.47037587, 1.0000],
+                        [1.0000, 0.0000, 0.6804801, 0.9795798, 0.24646705],
                     ],
                 ]
             ],
@@ -205,30 +211,29 @@ class TestYcbcrToRgb(BaseTester):
             dtype=dtype,
         )
 
-        assert_close(kornia.color.ycbcr_to_rgb(data), expected, atol=1e-4, rtol=1e-4)
+        self.assert_close(kornia.color.ycbcr_to_rgb(data), expected)
 
     # TODO: investigate and implement me
     # def test_forth_and_back(self, device, dtype):
     #    pass
 
-    @pytest.mark.grad
+    @pytest.mark.grad()
     def test_gradcheck(self, device, dtype):
         B, C, H, W = 2, 3, 4, 4
         img = torch.rand(B, C, H, W, device=device, dtype=torch.float64, requires_grad=True)
-        assert gradcheck(kornia.color.ycbcr_to_rgb, (img,), raise_exception=True)
+        assert gradcheck(kornia.color.ycbcr_to_rgb, (img,), raise_exception=True, fast_mode=True)
 
-    @pytest.mark.jit
+    @pytest.mark.jit()
     def test_jit(self, device, dtype):
         B, C, H, W = 2, 3, 4, 4
         img = torch.ones(B, C, H, W, device=device, dtype=dtype)
         op = kornia.color.ycbcr_to_rgb
         op_jit = torch.jit.script(op)
-        assert_close(op(img), op_jit(img))
+        self.assert_close(op(img), op_jit(img))
 
-    @pytest.mark.nn
     def test_module(self, device, dtype):
         B, C, H, W = 2, 3, 4, 4
         img = torch.ones(B, C, H, W, device=device, dtype=dtype)
         ops = kornia.color.YcbcrToRgb().to(device, dtype)
         fcn = kornia.color.ycbcr_to_rgb
-        assert_close(ops(img), fcn(img))
+        self.assert_close(ops(img), fcn(img))

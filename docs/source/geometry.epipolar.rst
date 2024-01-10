@@ -10,7 +10,7 @@ Module with useful functionalities for epipolar geometry used by Structure from 
 
 Essential
 ---------
-
+.. autofunction:: find_essential
 .. autofunction:: essential_from_fundamental
 .. autofunction:: essential_from_Rt
 .. autofunction:: decompose_essential_matrix
@@ -27,12 +27,17 @@ Fundamental
 .. autofunction:: compute_correspond_epilines
 .. autofunction:: normalize_points
 .. autofunction:: normalize_transformation
+.. autofunction:: get_perpendicular
+.. autofunction:: get_closest_point_on_epipolar_line
+
 
 Metrics
 -------
 
 .. autofunction:: sampson_epipolar_distance
 .. autofunction:: symmetrical_epipolar_distance
+.. autofunction:: left_to_right_epipolar_distance
+.. autofunction:: right_to_left_epipolar_distance
 
 Projection
 ----------
@@ -47,8 +52,7 @@ Numeric
 -------
 
 .. autofunction:: cross_product_matrix
-.. autofunction:: eye_like
-.. autofunction:: vec_like
+
 
 Triangulation
 -------------

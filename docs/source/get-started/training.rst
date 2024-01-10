@@ -1,3 +1,5 @@
+.. _training_api:
+
 Training API (experimental)
 ===========================
 
@@ -42,7 +44,7 @@ Design Principles
 Trainer Usage
 -------------
 
-The entry point to start traning with Kornia is through the :py:class:`~kornia.x.Trainer` class.
+The entry point to start training with Kornia is through the :py:class:`~kornia.x.Trainer` class.
 
 The main API is a self contained module that heavily relies on `accelerate <https://github.com/huggingface/accelerate/>`_
 to easily scale the training over multi-GPUs/TPU/fp16 `(see more) <https://github.com/huggingface/accelerate#supported-integrations/>`_
@@ -107,7 +109,7 @@ At this point you might think - *Is this API generic enough ?*
 	Of course not ! What is next ? Let's have fun and **customize**.
 
 The :py:class:`~kornia.x.Trainer` internals are clearly defined such in a way so that e.g you can
-subclass and just override the :py:meth:`~kornia.x.Trainer.evaluate` method and adjust
+subclass and just override the :py:func:`~kornia.x.Trainer.evaluate` method and adjust
 according to your needs. We provide predefined classes for generic problems such as
 :py:class:`~kornia.x.ImageClassifierTrainer`, :py:class:`~kornia.x.SemanticSegmentationTrainer`.
 
@@ -139,7 +141,7 @@ You can easily customize by creating your own class, or even through ``callbacks
 
 **Still not convinced ?**
 
-	You can even override the whole :py:class:`~kornia.x.ImageClassifierTrainer.fit()`
+	You can even override the whole :py:func:`~kornia.x.ImageClassifierTrainer.fit()`
 	method and implement your custom for loops and the trainer will setup for you using the Accelerator all
 	the data to the device and the rest of the story is just PyTorch :)
 
@@ -164,7 +166,7 @@ You can easily customize by creating your own class, or even through ``callbacks
 
 .. note::
   The following hooks are available to override: ``preprocess``, ``augmentations``, ``evaluate``, ``fit``,
-  ``checkpoint``, ``on_epoch_end``, ``on_before_model``
+  ``on_checkpoint``, ``on_epoch_end``, ``on_before_model``
 
 
 Preprocess and augmentations
@@ -188,7 +190,7 @@ the debugging and experimentation experience.
 	  K.augmentation.RandomVerticalFlip(p=0.75),
 	  K.augmentation.RandomAffine(degrees=10.),
 	  K.augmentation.PatchSequential(
-		K.augmentation.ColorJitter(0.1, 0.1, 0.1, 0.1, p=0.8),
+		K.augmentation.ColorJiggle(0.1, 0.1, 0.1, 0.1, p=0.8),
 		grid_size=(2, 2),  # cifar-10 is 32x32 and vit is patch 16
 		patchwise_apply=False,
 	  ),
@@ -214,7 +216,7 @@ as follows passing as ``callbacks`` the classes :py:class:`~kornia.x.ModelCheckp
 	early_stop = EarlyStopping(monitor="top5")
 
 	trainer = K.train.ImageClassifierTrainer(...,
-	  callbacks={"checkpoint", model_checkpoint, "terminate": early_stop})
+	  callbacks={"on_checkpoint", model_checkpoint, "on_epoch_end": early_stop})
 
 Hyperparameter sweeps
 ---------------------
@@ -223,7 +225,7 @@ Use `hydra <https://hydra.cc>`_ to implement an easy search strategy for your hy
 
 .. note::
 
-  Checkout the toy example in `here <https://github.com/kornia/kornia/tree/master/examples/train/image_classifier>`__
+  Checkout the toy example in `here <https://github.com/kornia/tutorials/tree/master/scripts/training/image_classifier>`__
 
 .. code:: python
 
@@ -242,7 +244,7 @@ decouple the process of running your training scripts in a distributed environme
 .. note::
 
 	We haven't tested yet all the possibilities for distributed training.
-	Expect some adventures or `join us <https://join.slack.com/t/kornia/shared_invite/zt-csobk21g-CnydWe5fmvkcktIeRFGCEQ>`_ and help to iterate :)
+	Expect some adventures or `join us <https://join.slack.com/t/kornia/shared_invite/zt-csobk21g-2AQRi~X9Uu6PLMuUZdvfjA>`_ and help to iterate :)
 
 The below recipes are taken from the `accelerate` library in `here <https://github.com/huggingface/accelerate/tree/main/examples#simple-vision-example>`__:
 

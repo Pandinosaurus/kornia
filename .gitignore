@@ -1,6 +1,5 @@
 build/
 dist/
-*version.py
 kornia.egg-info/
 .idea
 */**/__pycache__
@@ -20,3 +19,7 @@ kornia.egg-info/
 *bak
 *ipynb_checkpoints*
 docs/source/_static/*jpg
+*DS_Store
+
+# onnx tests create temp.onnx file
+*.onnx

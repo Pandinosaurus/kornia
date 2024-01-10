@@ -1,13 +1,18 @@
 """Module containing the functionalities for computing the Fundamental Matrix."""
 
-from typing import Tuple
+from typing import Literal, Optional, Tuple
 
 import torch
 
-import kornia
+from kornia.core import Tensor, concatenate, ones_like, stack, where, zeros
+from kornia.core.check import KORNIA_CHECK_SHAPE
+from kornia.geometry.conversions import convert_points_from_homogeneous, convert_points_to_homogeneous
+from kornia.geometry.linalg import transform_points
+from kornia.geometry.solvers import solve_cubic
+from kornia.utils.helpers import _torch_svd_cast
 
 
-def normalize_points(points: torch.Tensor, eps: float = 1e-8) -> Tuple[torch.Tensor, torch.Tensor]:
+def normalize_points(points: Tensor, eps: float = 1e-8) -> Tuple[Tensor, Tensor]:
     r"""Normalizes points (isotropic).
 
     Computes the transformation matrix such that the two principal moments of the set of points
@@ -24,7 +29,6 @@ def normalize_points(points: torch.Tensor, eps: float = 1e-8) -> Tuple[torch.Ten
     Returns:
        tuple containing the normalized points in the shape :math:`(B, N, 2)` and the transformation matrix
        in the shape :math:`(B, 3, 3)`.
-
     """
     if len(points.shape) != 3:
         raise AssertionError(points.shape)
@@ -33,22 +37,22 @@ def normalize_points(points: torch.Tensor, eps: float = 1e-8) -> Tuple[torch.Ten
 
     x_mean = torch.mean(points, dim=1, keepdim=True)  # Bx1x2
 
-    scale = (points - x_mean).norm(dim=-1).mean(dim=-1)  # B
+    scale = (points - x_mean).norm(dim=-1, p=2).mean(dim=-1)  # B
     scale = torch.sqrt(torch.tensor(2.0)) / (scale + eps)  # B
 
-    ones, zeros = torch.ones_like(scale), torch.zeros_like(scale)
+    ones, zeros = ones_like(scale), torch.zeros_like(scale)
 
-    transform = torch.stack(
+    transform = stack(
         [scale, zeros, -scale * x_mean[..., 0, 0], zeros, scale, -scale * x_mean[..., 0, 1], zeros, zeros, ones], dim=-1
     )  # Bx9
 
     transform = transform.view(-1, 3, 3)  # Bx3x3
-    points_norm = kornia.transform_points(transform, points)  # BxNx2
+    points_norm = transform_points(transform, points)  # BxNx2
 
-    return (points_norm, transform)
+    return points_norm, transform
 
 
-def normalize_transformation(M: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+def normalize_transformation(M: Tensor, eps: float = 1e-8) -> Tensor:
     r"""Normalize a given transformation matrix.
 
     The function trakes the transformation matrix and normalize so that the value in
@@ -60,32 +64,29 @@ def normalize_transformation(M: torch.Tensor, eps: float = 1e-8) -> torch.Tensor
 
     Returns:
         the normalized transformation matrix with same shape as the input.
-
     """
     if len(M.shape) < 2:
         raise AssertionError(M.shape)
-    norm_val: torch.Tensor = M[..., -1:, -1:]
-    return torch.where(norm_val.abs() > eps, M / (norm_val + eps), M)
+    norm_val: Tensor = M[..., -1:, -1:]
+    return where(norm_val.abs() > eps, M / (norm_val + eps), M)
 
 
-def find_fundamental(points1: torch.Tensor, points2: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
-    r"""Compute the fundamental matrix using the DLT formulation.
-
-    The linear system is solved by using the Weighted Least Squares Solution for the 8 Points algorithm.
+# Reference: Adapted from the 'run_7point' function in opencv
+# https://github.com/opencv/opencv/blob/4.x/modules/calib3d/src/fundam.cpp
+def run_7point(points1: Tensor, points2: Tensor) -> Tensor:
+    r"""Compute the fundamental matrix using the 7-point algorithm.
 
     Args:
         points1: A set of points in the first image with a tensor shape :math:`(B, N, 2)`.
         points2: A set of points in the second image with a tensor shape :math:`(B, N, 2)`.
-        weights: Tensor containing the weights per point correspondence with a shape of :math:`(B, N)`.
 
     Returns:
-        the computed fundamental matrix with shape :math:`(B, 3, 3)`.
-
+        the computed fundamental matrix with shape :math:`(B, 3*m, 3), Valid values of m are 1, 2 or 3`
     """
-    if points1.shape != points2.shape:
-        raise AssertionError(points1.shape, points2.shape)
-    if not (len(weights.shape) == 2 and weights.shape[1] == points1.shape[1]):
-        raise AssertionError(weights.shape)
+    KORNIA_CHECK_SHAPE(points1, ["B", "7", "2"])
+    KORNIA_CHECK_SHAPE(points2, ["B", "7", "2"])
+
+    batch_size = points1.shape[0]
 
     points1_norm, transform1 = normalize_points(points1)
     points2_norm, transform2 = normalize_points(points2)
@@ -93,7 +94,106 @@ def find_fundamental(points1: torch.Tensor, points2: torch.Tensor, weights: torc
     x1, y1 = torch.chunk(points1_norm, dim=-1, chunks=2)  # Bx1xN
     x2, y2 = torch.chunk(points2_norm, dim=-1, chunks=2)  # Bx1xN
 
-    ones = torch.ones_like(x1)
+    ones = ones_like(x1)
+    # form a linear system: which represents
+    # the equation (x2[i], 1)*F*(x1[i], 1) = 0
+    X = concatenate([x2 * x1, x2 * y1, x2, y2 * x1, y2 * y1, y2, x1, y1, ones], -1)  # BxNx9
+
+    # X * Fmat = 0 is singular (7 equations for 9 variables)
+    # solving for nullspace of X to get two F
+    ####### unstable failing gradcheck
+    # _, _, v = torch.linalg.svd(X)
+    _, _, v = _torch_svd_cast(X)
+
+    # last two singular vector as a basic of the space
+    f1 = v[..., 7].view(-1, 3, 3)
+    f2 = v[..., 8].view(-1, 3, 3)
+
+    # lambda*f1 + mu*f2 is an arbitrary fundamental matrix
+    # f ~ lambda*f1 + (1 - lambda)*f2
+    # det(f) = det(lambda*f1 + (1-lambda)*f2), find lambda
+    # form a cubic equation
+    # finding the coefficients of cubic polynomial (coeffs)
+
+    coeffs = zeros((batch_size, 4), device=v.device, dtype=v.dtype)
+
+    f1_det = torch.linalg.det(f1)
+    f2_det = torch.linalg.det(f2)
+    coeffs[:, 0] = f1_det
+    coeffs[:, 1] = torch.einsum("bii->b", f2 @ torch.inverse(f1)) * f1_det
+    coeffs[:, 2] = torch.einsum("bii->b", f1 @ torch.inverse(f2)) * f2_det
+    coeffs[:, 3] = f2_det
+
+    # solve the cubic equation, there can be 1 to 3 roots
+    # roots = torch.tensor(np.roots(coeffs.numpy()))
+    roots = solve_cubic(coeffs)
+
+    fmatrix = zeros((batch_size, 3, 3, 3), device=v.device, dtype=v.dtype)
+    valid_root_mask = (torch.count_nonzero(roots, dim=1) < 3) | (torch.count_nonzero(roots, dim=1) > 1)
+
+    _lambda = roots
+    _mu = torch.ones_like(_lambda)
+
+    _s = f1[valid_root_mask, 2, 2].unsqueeze(dim=1) * roots[valid_root_mask] + f2[valid_root_mask, 2, 2].unsqueeze(
+        dim=1
+    )
+    # _s_non_zero_mask = torch.abs(_s ) > 1e-16
+    _s_non_zero_mask = ~torch.isclose(_s, torch.tensor(0.0, device=v.device, dtype=v.dtype))
+
+    _mu[_s_non_zero_mask] = 1.0 / _s[_s_non_zero_mask]
+    _lambda[_s_non_zero_mask] = _lambda[_s_non_zero_mask] * _mu[_s_non_zero_mask]
+
+    f1_expanded = f1.unsqueeze(1).expand(batch_size, 3, 3, 3)
+    f2_expanded = f2.unsqueeze(1).expand(batch_size, 3, 3, 3)
+
+    fmatrix[valid_root_mask] = (
+        f1_expanded[valid_root_mask] * _lambda[valid_root_mask, :, None, None]
+        + f2_expanded[valid_root_mask] * _mu[valid_root_mask, :, None, None]
+    )
+
+    mat_ind = zeros(3, 3, dtype=torch.bool)
+    mat_ind[2, 2] = True
+    fmatrix[_s_non_zero_mask, mat_ind] = 1.0
+    fmatrix[~_s_non_zero_mask, mat_ind] = 0.0
+
+    trans1_exp = transform1[valid_root_mask].unsqueeze(1).expand(-1, fmatrix.shape[2], -1, -1)
+    trans2_exp = transform2[valid_root_mask].unsqueeze(1).expand(-1, fmatrix.shape[2], -1, -1)
+
+    fmatrix[valid_root_mask] = torch.matmul(
+        trans2_exp.transpose(-2, -1), torch.matmul(fmatrix[valid_root_mask], trans1_exp)
+    )
+
+    return normalize_transformation(fmatrix)
+
+
+def run_8point(points1: Tensor, points2: Tensor, weights: Optional[Tensor] = None) -> Tensor:
+    r"""Compute the fundamental matrix using the DLT formulation.
+
+    The linear system is solved by using the Weighted Least Squares Solution for the 8 Points algorithm.
+
+    Args:
+        points1: A set of points in the first image with a tensor shape :math:`(B, N, 2), N>=8`.
+        points2: A set of points in the second image with a tensor shape :math:`(B, N, 2), N>=8`.
+        weights: Tensor containing the weights per point correspondence with a shape of :math:`(B, N)`.
+
+    Returns:
+        the computed fundamental matrix with shape :math:`(B, 3, 3)`.
+    """
+    if points1.shape != points2.shape:
+        raise AssertionError(points1.shape, points2.shape)
+    if points1.shape[1] < 8:
+        raise AssertionError(points1.shape)
+    if weights is not None:
+        if not (len(weights.shape) == 2 and weights.shape[1] == points1.shape[1]):
+            raise AssertionError(weights.shape)
+
+    points1_norm, transform1 = normalize_points(points1)
+    points2_norm, transform2 = normalize_points(points2)
+
+    x1, y1 = torch.chunk(points1_norm, dim=-1, chunks=2)  # Bx1xN
+    x2, y2 = torch.chunk(points2_norm, dim=-1, chunks=2)  # Bx1xN
+
+    ones = ones_like(x1)
 
     # build equations system and solve DLT
     # https://www.cc.gatech.edu/~afb/classes/CS4495-Fall2013/slides/CS4495-09-TwoViews-2.pdf
@@ -102,16 +202,19 @@ def find_fundamental(points1: torch.Tensor, points2: torch.Tensor, weights: torc
     X = torch.cat([x2 * x1, x2 * y1, x2, y2 * x1, y2 * y1, y2, x1, y1, ones], dim=-1)  # BxNx9
 
     # apply the weights to the linear system
-    w_diag = torch.diag_embed(weights)
-    X = X.transpose(-2, -1) @ w_diag @ X
-
+    if weights is None:
+        X = X.transpose(-2, -1) @ X
+    else:
+        w_diag = torch.diag_embed(weights)
+        X = X.transpose(-2, -1) @ w_diag @ X
     # compute eigevectors and retrieve the one with the smallest eigenvalue
-    _, _, V = torch.svd(X)
+
+    _, _, V = _torch_svd_cast(X)
     F_mat = V[..., -1].view(-1, 3, 3)
 
     # reconstruct and force the matrix to have rank2
-    U, S, V = torch.svd(F_mat)
-    rank_mask = torch.tensor([1.0, 1.0, 0]).to(F_mat.device)
+    U, S, V = _torch_svd_cast(F_mat)
+    rank_mask = torch.tensor([1.0, 1.0, 0.0], device=F_mat.device, dtype=F_mat.dtype)
 
     F_projected = U @ (torch.diag_embed(S * rank_mask) @ V.transpose(-2, -1))
     F_est = transform2.transpose(-2, -1) @ (F_projected @ transform1)
@@ -119,38 +222,117 @@ def find_fundamental(points1: torch.Tensor, points2: torch.Tensor, weights: torc
     return normalize_transformation(F_est)
 
 
-def compute_correspond_epilines(points: torch.Tensor, F_mat: torch.Tensor) -> torch.Tensor:
+def find_fundamental(
+    points1: Tensor, points2: Tensor, weights: Optional[Tensor] = None, method: Literal["8POINT", "7POINT"] = "8POINT"
+) -> Tensor:
+    r"""
+    Args:
+        points1: A set of points in the first image with a tensor shape :math:`(B, N, 2), N>=8`.
+        points2: A set of points in the second image with a tensor shape :math:`(B, N, 2), N>=8`.
+        weights: Tensor containing the weights per point correspondence with a shape of :math:`(B, N)`.
+        method: The method to use for computing the fundamental matrix. Supported methods are "7POINT" and "8POINT".
+
+    Returns:
+        the computed fundamental matrix with shape :math:`(B, 3*m, 3)`, where `m` number of fundamental matrix.
+
+    Raises:
+        ValueError: If an invalid method is provided.
+
+    """
+    if method.upper() == "7POINT":
+        result = run_7point(points1, points2)
+    elif method.upper() == "8POINT":
+        result = run_8point(points1, points2, weights)
+    else:
+        raise ValueError(f"Invalid method: {method}. Supported methods are '7POINT' and '8POINT'.")
+    return result
+
+
+def compute_correspond_epilines(points: Tensor, F_mat: Tensor) -> Tensor:
     r"""Compute the corresponding epipolar line for a given set of points.
 
     Args:
-        points: tensor containing the set of points to project in the shape of :math:`(B, N, 2)`.
-        F_mat: the fundamental to use for projection the points in the shape of :math:`(B, 3, 3)`.
+        points: tensor containing the set of points to project in the shape of :math:`(*, N, 2)` or :math:`(*, N, 3)`.
+        F_mat: the fundamental to use for projection the points in the shape of :math:`(*, 3, 3)`.
 
     Returns:
-        a tensor with shape :math:`(B, N, 3)` containing a vector of the epipolar
+        a tensor with shape :math:`(*, N, 3)` containing a vector of the epipolar
         lines corresponding to the points to the other image. Each line is described as
         :math:`ax + by + c = 0` and encoding the vectors as :math:`(a, b, c)`.
-
     """
-    if not (len(points.shape) == 3 and points.shape[2] == 2):
+    KORNIA_CHECK_SHAPE(points, ["*", "N", "DIM"])
+    if points.shape[-1] == 2:
+        points_h: Tensor = convert_points_to_homogeneous(points)
+    elif points.shape[-1] == 3:
+        points_h = points
+    else:
         raise AssertionError(points.shape)
-    if not (len(F_mat.shape) == 3 and F_mat.shape[-2:] == (3, 3)):
-        raise AssertionError(F_mat.shape)
-
-    points_h: torch.Tensor = kornia.convert_points_to_homogeneous(points)
-
+    KORNIA_CHECK_SHAPE(F_mat, ["*", "3", "3"])
     # project points and retrieve lines components
-    a, b, c = torch.chunk(F_mat @ points_h.permute(0, 2, 1), dim=1, chunks=3)
+    points_h = torch.transpose(points_h, dim0=-2, dim1=-1)
+    a, b, c = torch.chunk(F_mat @ points_h, dim=-2, chunks=3)
 
     # compute normal and compose equation line
-    nu: torch.Tensor = a * a + b * b
-    nu = torch.where(nu > 0.0, 1.0 / torch.sqrt(nu), torch.ones_like(nu))
+    nu: Tensor = a * a + b * b
+    nu = where(nu > 0.0, 1.0 / torch.sqrt(nu), torch.ones_like(nu))
 
-    line = torch.cat([a * nu, b * nu, c * nu], dim=1)  # Bx3xN
-    return line.permute(0, 2, 1)  # BxNx3
+    line = torch.cat([a * nu, b * nu, c * nu], dim=-2)  # *x3xN
+    return torch.transpose(line, dim0=-2, dim1=-1)  # *xNx3
 
 
-def fundamental_from_essential(E_mat: torch.Tensor, K1: torch.Tensor, K2: torch.Tensor) -> torch.Tensor:
+def get_perpendicular(lines: Tensor, points: Tensor) -> Tensor:
+    r"""Compute the perpendicular to a line, through the point.
+
+    Args:
+        lines: tensor containing the set of lines :math:`(*, N, 3)`.
+        points:  tensor containing the set of points :math:`(*, N, 2)`.
+
+    Returns:
+        a tensor with shape :math:`(*, N, 3)` containing a vector of the epipolar
+        perpendicular lines. Each line is described as
+        :math:`ax + by + c = 0` and encoding the vectors as :math:`(a, b, c)`.
+    """
+    KORNIA_CHECK_SHAPE(lines, ["*", "N", "3"])
+    KORNIA_CHECK_SHAPE(points, ["*", "N", "two"])
+    if points.shape[2] == 2:
+        points_h: Tensor = convert_points_to_homogeneous(points)
+    elif points.shape[2] == 3:
+        points_h = points
+    else:
+        raise AssertionError(points.shape)
+    infinity_point = lines * torch.tensor([1, 1, 0], dtype=lines.dtype, device=lines.device).view(1, 1, 3)
+    perp: Tensor = points_h.cross(infinity_point, dim=2)
+    return perp
+
+
+def get_closest_point_on_epipolar_line(pts1: Tensor, pts2: Tensor, Fm: Tensor) -> Tensor:
+    """Return closest point on the epipolar line to the correspondence, given the fundamental matrix.
+
+    Args:
+        pts1: correspondences from the left images with shape :math:`(*, N, (2|3))`. If they are not homogeneous,
+              converted automatically.
+        pts2: correspondences from the right images with shape :math:`(*, N, (2|3))`. If they are not homogeneous,
+              converted automatically.
+        Fm: Fundamental matrices with shape :math:`(*, 3, 3)`. Called Fm to avoid ambiguity with torch.nn.functional.
+
+    Returns:
+        point on epipolar line :math:`(*, N, 2)`.
+    """
+    if not isinstance(Fm, Tensor):
+        raise TypeError(f"Fm type is not a torch.Tensor. Got {type(Fm)}")
+    if (len(Fm.shape) < 3) or not Fm.shape[-2:] == (3, 3):
+        raise ValueError(f"Fm must be a (*, 3, 3) tensor. Got {Fm.shape}")
+    if pts1.shape[-1] == 2:
+        pts1 = convert_points_to_homogeneous(pts1)
+    if pts2.shape[-1] == 2:
+        pts2 = convert_points_to_homogeneous(pts2)
+    line1in2 = compute_correspond_epilines(pts1, Fm)
+    perp = get_perpendicular(line1in2, pts2)
+    points1_in_2 = convert_points_from_homogeneous(line1in2.cross(perp, dim=2))
+    return points1_in_2
+
+
+def fundamental_from_essential(E_mat: Tensor, K1: Tensor, K2: Tensor) -> Tensor:
     r"""Get the Fundamental matrix from Essential and camera matrices.
 
     Uses the method from Hartley/Zisserman 9.6 pag 257 (formula 9.12).
@@ -162,7 +344,6 @@ def fundamental_from_essential(E_mat: torch.Tensor, K1: torch.Tensor, K2: torch.
 
     Returns:
         The fundamental matrix with shape :math:`(*, 3, 3)`.
-
     """
     if not (len(E_mat.shape) >= 2 and E_mat.shape[-2:] == (3, 3)):
         raise AssertionError(E_mat.shape)
@@ -181,7 +362,7 @@ def fundamental_from_essential(E_mat: torch.Tensor, K1: torch.Tensor, K2: torch.
 # https://github.com/openMVG/openMVG/blob/160643be515007580086650f2ae7f1a42d32e9fb/src/openMVG/multiview/projection.cpp#L134
 
 
-def fundamental_from_projections(P1: torch.Tensor, P2: torch.Tensor) -> torch.Tensor:
+def fundamental_from_projections(P1: Tensor, P2: Tensor) -> Tensor:
     r"""Get the Fundamental matrix from Projection matrices.
 
     Args:
@@ -190,7 +371,6 @@ def fundamental_from_projections(P1: torch.Tensor, P2: torch.Tensor) -> torch.Te
 
     Returns:
          The fundamental matrix with shape :math:`(*, 3, 3)`.
-
     """
     if not (len(P1.shape) >= 2 and P1.shape[-2:] == (3, 4)):
         raise AssertionError(P1.shape)
@@ -199,8 +379,8 @@ def fundamental_from_projections(P1: torch.Tensor, P2: torch.Tensor) -> torch.Te
     if P1.shape[:-2] != P2.shape[:-2]:
         raise AssertionError
 
-    def vstack(x, y):
-        return torch.cat([x, y], dim=-2)
+    def vstack(x: Tensor, y: Tensor) -> Tensor:
+        return concatenate([x, y], dim=-2)
 
     X1 = P1[..., 1:, :]
     X2 = vstack(P1[..., 2:3, :], P1[..., 0:1, :])

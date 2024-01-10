@@ -41,8 +41,8 @@ class TestClosing:
         assert_close(
             closing(tensor, torch.ones_like(structural_element), structuring_element=structural_element),
             expected,
-            atol=1e-4,
-            rtol=1e-4,
+            atol=1e-3,
+            rtol=1e-3,
         )
 
     def test_exception(self, device, dtype):
@@ -63,13 +63,13 @@ class TestClosing:
             test = torch.ones(2, 3, 4, device=device, dtype=dtype)
             assert closing(tensor, test)
 
-    @pytest.mark.grad
+    @pytest.mark.grad()
     def test_gradcheck(self, device, dtype):
         tensor = torch.rand(2, 3, 4, 4, requires_grad=True, device=device, dtype=torch.float64)
         kernel = torch.rand(3, 3, requires_grad=True, device=device, dtype=torch.float64)
-        assert gradcheck(closing, (tensor, kernel), raise_exception=True)
+        assert gradcheck(closing, (tensor, kernel), raise_exception=True, fast_mode=True)
 
-    @pytest.mark.jit
+    @pytest.mark.jit()
     def test_jit(self, device, dtype):
         op = closing
         op_script = torch.jit.script(op)

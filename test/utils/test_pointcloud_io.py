@@ -13,10 +13,10 @@ class TestSaveLoadPointCloud:
 
         # save to file
         filename = "pointcloud.ply"
-        kornia.save_pointcloud_ply(filename, xyz_save)
+        kornia.utils.save_pointcloud_ply(filename, xyz_save)
 
         # load file
-        xyz_load = kornia.load_pointcloud_ply(filename)
+        xyz_load = kornia.utils.load_pointcloud_ply(filename)
         assert_close(xyz_save.reshape(-1, 3), xyz_load)
 
         # remove the temporal file
@@ -31,21 +31,21 @@ class TestSaveLoadPointCloud:
 
         # add nans or infinite values
         # point data (inf, inf, inf) skipped
-        xyz_save[0, 0, :] = float('inf')
+        xyz_save[0, 0, :] = float("inf")
         # point data (inf, number, number) counted
-        xyz_save[0, 1, 0] = float('inf')
+        xyz_save[0, 1, 0] = float("inf")
         # point data (inf, inf, number) counted
-        xyz_save[1, 0, :-1] = float('inf')
+        xyz_save[1, 0, :-1] = float("inf")
 
         # save to file
         filename = "pointcloud.ply"
-        kornia.save_pointcloud_ply(filename, xyz_save)
+        kornia.utils.save_pointcloud_ply(filename, xyz_save)
 
         # same as xyz_save but with dropping the first point
         xyz_correct = xyz_save.reshape(-1, 3)[1:, :]
 
         # load file
-        xyz_load = kornia.load_pointcloud_ply(filename)
+        xyz_load = kornia.utils.load_pointcloud_ply(filename)
         assert_close(xyz_correct, xyz_load)
 
         if os.path.exists(filename):

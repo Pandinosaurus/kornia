@@ -1,5 +1,7 @@
+.. _kornia_vit:
+
 Vision Transformer (ViT)
-.........................
+........................
 
 .. card::
     :link: https://paperswithcode.com/paper/an-image-is-worth-16x16-words-transformers-1
@@ -35,6 +37,9 @@ One can use the *ViT* in Kornia as follows:
     vit = VisionTransformer(image_size=224, patch_size=16)
     out = vit(img)
 
+Usage
+~~~~~
+
 ``kornia-vit`` does not include any classification head.
 For this reason, we provide an :py:class:`~kornia.contrib.ClassificationHead` which can be easily combined
 with a `nn.Sequential` in order to easily build a custom image classification pipeline.
@@ -64,8 +69,8 @@ class with two different classification heads:
             super().__init__()
             self.transformer = K.VisionTransformer(
                 image_size=224, patch_size=16)
-            self.head1 = K.ClassficationHead(num_classes=10)
-            self.head2 = K.ClassficationHead(num_classes=50)
+            self.head1 = K.ClassificationHead(num_classes=10)
+            self.head2 = K.ClassificationHead(num_classes=50)
 
         def forward(self, x: torch.Tensor):
             out = self.transformer(x)

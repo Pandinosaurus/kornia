@@ -1,7 +1,7 @@
-from typing import cast, Union
+from typing import Union, cast
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 
 def rgb_to_bgr(image: torch.Tensor) -> torch.Tensor:
@@ -14,10 +14,6 @@ def rgb_to_bgr(image: torch.Tensor) -> torch.Tensor:
 
     Returns:
         BGR version of the image with shape of shape :math:`(*,3,H,W)`.
-
-    .. note::
-       See a working example `here <https://kornia-tutorials.readthedocs.io/en/latest/
-       hello_world_tutorial.html>`__.
 
     Example:
         >>> input = torch.rand(2, 3, 4, 5)
@@ -40,10 +36,6 @@ def bgr_to_rgb(image: torch.Tensor) -> torch.Tensor:
 
     Returns:
         RGB version of the image with shape of shape :math:`(*,3,H,W)`.
-
-    .. note::
-       See a working example `here <https://kornia-tutorials.readthedocs.io/en/latest/
-       color_conversions.html>`__.
 
     Example:
         >>> input = torch.rand(2, 3, 4, 5)
@@ -198,7 +190,6 @@ def rgb_to_linear_rgb(image: torch.Tensor) -> torch.Tensor:
         >>> input = torch.rand(2, 3, 4, 5)
         >>> output = rgb_to_linear_rgb(input) # 2x3x4x5
     """
-
     if not isinstance(image, torch.Tensor):
         raise TypeError(f"Input type is not a torch.Tensor. Got {type(image)}")
 
@@ -223,7 +214,6 @@ def linear_rgb_to_rgb(image: torch.Tensor) -> torch.Tensor:
         >>> input = torch.rand(2, 3, 4, 5)
         >>> output = linear_rgb_to_rgb(input) # 2x3x4x5
     """
-
     if not isinstance(image, torch.Tensor):
         raise TypeError(f"Input type is not a torch.Tensor. Got {type(image)}")
 

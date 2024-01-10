@@ -1,8 +1,9 @@
-from typing import Tuple
+from __future__ import annotations
 
 import torch
-import torch.nn as nn
+from torch import nn
 
+from kornia.core import ones, zeros
 from kornia.utils import create_meshgrid
 from kornia.utils.helpers import _torch_solve_cast
 
@@ -12,8 +13,8 @@ __all__ = ["get_tps_transform", "warp_points_tps", "warp_image_tps"]
 
 
 def _pair_square_euclidean(tensor1: torch.Tensor, tensor2: torch.Tensor) -> torch.Tensor:
-    r"""Compute the pairwise squared euclidean distance matrices :math:`(B, N, M)` between two tensors
-    with shapes (B, N, C) and (B, M, C)."""
+    r"""Compute the pairwise squared euclidean distance matrices :math:`(B, N, M)` between two tensors with shapes
+    (B, N, C) and (B, M, C)."""
     # ||t1-t2||^2 = (t1-t2)^T(t1-t2) = t1^T*t1 + t2^T*t2 - 2*t1^T*t2
     t1_sq: torch.Tensor = tensor1.mul(tensor1).sum(dim=-1, keepdim=True)
     t2_sq: torch.Tensor = tensor2.mul(tensor2).sum(dim=-1, keepdim=True).transpose(1, 2)
@@ -25,13 +26,16 @@ def _pair_square_euclidean(tensor1: torch.Tensor, tensor2: torch.Tensor) -> torc
 
 def _kernel_distance(squared_distances: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     r"""Compute the TPS kernel distance function: :math:`r^2 log(r)`, where `r` is the euclidean distance.
-    Since :math:`\log(r) = 1/2 \log(r^2)`, this function takes the squared distance matrix and calculates
-    :math:`0.5 r^2 log(r^2)`."""
+
+    Since
+    :math: `\log(r) = 1/2 \log(r^2)`, this function takes the squared distance matrix and calculates
+    :math: `0.5 r^2 log(r^2)`.
+    """
     # r^2 * log(r) = 1/2 * r^2 * log(r^2)
     return 0.5 * squared_distances * squared_distances.add(eps).log()
 
 
-def get_tps_transform(points_src: torch.Tensor, points_dst: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def get_tps_transform(points_src: torch.Tensor, points_dst: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     r"""Compute the TPS transform parameters that warp source points to target points.
 
     The input to this function is a tensor of :math:`(x, y)` source points :math:`(B, N, 2)` and a corresponding
@@ -75,26 +79,26 @@ def get_tps_transform(points_src: torch.Tensor, points_dst: torch.Tensor) -> Tup
     pair_distance: torch.Tensor = _pair_square_euclidean(points_src, points_dst)
     k_matrix: torch.Tensor = _kernel_distance(pair_distance)
 
-    zero_mat: torch.Tensor = torch.zeros(batch_size, 3, 3, device=device, dtype=dtype)
-    one_mat: torch.Tensor = torch.ones(batch_size, num_points, 1, device=device, dtype=dtype)
+    zero_mat: torch.Tensor = zeros(batch_size, 3, 3, device=device, dtype=dtype)
+    one_mat: torch.Tensor = ones(batch_size, num_points, 1, device=device, dtype=dtype)
     dest_with_zeros: torch.Tensor = torch.cat((points_dst, zero_mat[:, :, :2]), 1)
     p_matrix: torch.Tensor = torch.cat((one_mat, points_src), -1)
     p_matrix_t: torch.Tensor = torch.cat((p_matrix, zero_mat), 1).transpose(1, 2)
     l_matrix: torch.Tensor = torch.cat((k_matrix, p_matrix), -1)
     l_matrix = torch.cat((l_matrix, p_matrix_t), 1)
 
-    weights, _ = _torch_solve_cast(dest_with_zeros, l_matrix)
+    weights = _torch_solve_cast(l_matrix, dest_with_zeros)
     kernel_weights: torch.Tensor = weights[:, :-3]
     affine_weights: torch.Tensor = weights[:, -3:]
 
-    return (kernel_weights, affine_weights)
+    return kernel_weights, affine_weights
 
 
 def warp_points_tps(
     points_src: torch.Tensor, kernel_centers: torch.Tensor, kernel_weights: torch.Tensor, affine_weights: torch.Tensor
 ) -> torch.Tensor:
-    r"""Warp a tensor of coordinate points using the thin plate spline defined by kernel points, kernel weights,
-    and affine weights.
+    r"""Warp a tensor of coordinate points using the thin plate spline defined by kernel points, kernel weights, and
+    affine weights.
 
     The source points should be a :math:`(B, N, 2)` tensor of :math:`(x, y)` coordinates. The kernel centers are
     a :math:`(B, K, 2)` tensor of :math:`(x, y)` coordinates. The kernel weights are a :math:`(B, K, 2)` tensor,
@@ -164,8 +168,8 @@ def warp_image_tps(
     affine_weights: torch.Tensor,
     align_corners: bool = False,
 ) -> torch.Tensor:
-    r"""Warp an image tensor according to the thin plate spline transform defined by kernel centers,
-    kernel weights, and affine weights.
+    r"""Warp an image tensor according to the thin plate spline transform defined by kernel centers, kernel weights,
+    and affine weights.
 
     .. image:: _static/img/warp_image_tps.png
 
@@ -221,9 +225,8 @@ def warp_image_tps(
     if not len(affine_weights.shape) == 3:
         raise ValueError(f"Invalid shape for affine_weights, expected BxNx2. Got {affine_weights.shape}")
 
-    device, dtype = image.device, image.dtype
     batch_size, _, h, w = image.shape
-    coords: torch.Tensor = create_meshgrid(h, w, device=device).to(dtype=dtype)
+    coords: torch.Tensor = create_meshgrid(h, w, device=image.device, dtype=image.dtype)
     coords = coords.reshape(-1, 2).expand(batch_size, -1, -1)
     warped: torch.Tensor = warp_points_tps(coords, kernel_centers, kernel_weights, affine_weights)
     warped = warped.view(-1, h, w, 2)

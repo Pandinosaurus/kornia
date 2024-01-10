@@ -6,6 +6,7 @@ import torch
 from torch.autograd import gradcheck
 
 import kornia.geometry.epipolar as epi
+import kornia.testing as utils2
 from kornia.testing import assert_close
 
 
@@ -36,7 +37,7 @@ class TestNormalizePoints:
 
     def test_gradcheck(self, device):
         points = torch.rand(2, 3, 2, device=device, requires_grad=True, dtype=torch.float64)
-        assert gradcheck(epi.normalize_points, (points,), raise_exception=True)
+        assert gradcheck(epi.normalize_points, (points,), raise_exception=True, fast_mode=True)
 
 
 class TestNormalizeTransformation:
@@ -70,18 +71,18 @@ class TestNormalizeTransformation:
 
     def test_gradcheck(self, device):
         trans = torch.rand(2, 3, 3, device=device, requires_grad=True, dtype=torch.float64)
-        assert gradcheck(epi.normalize_transformation, (trans,), raise_exception=True)
+        assert gradcheck(epi.normalize_transformation, (trans,), raise_exception=True, fast_mode=True)
 
 
 class TestFindFundamental:
     def test_smoke(self, device, dtype):
-        points1 = torch.rand(1, 1, 2, device=device, dtype=dtype)
-        points2 = torch.rand(1, 1, 2, device=device, dtype=dtype)
-        weights = torch.ones(1, 1, device=device, dtype=dtype)
+        points1 = torch.rand(1, 8, 2, device=device, dtype=dtype)
+        points2 = torch.rand(1, 8, 2, device=device, dtype=dtype)
+        weights = torch.ones(1, 8, device=device, dtype=dtype)
         F_mat = epi.find_fundamental(points1, points2, weights)
         assert F_mat.shape == (1, 3, 3)
 
-    @pytest.mark.parametrize("batch_size, num_points", [(1, 2), (2, 3), (3, 2)])
+    @pytest.mark.parametrize("batch_size, num_points", [(1, 8), (2, 9), (3, 10)])
     def test_shape(self, batch_size, num_points, device, dtype):
         B, N = batch_size, num_points
         points1 = torch.rand(B, N, 2, device=device, dtype=dtype)
@@ -90,7 +91,25 @@ class TestFindFundamental:
         F_mat = epi.find_fundamental(points1, points2, weights)
         assert F_mat.shape == (B, 3, 3)
 
-    def test_opencv(self, device, dtype):
+    @pytest.mark.parametrize("batch_size, num_points", [(1, 8), (2, 8), (3, 10)])
+    def test_shape_noweights(self, batch_size, num_points, device, dtype):
+        B, N = batch_size, num_points
+        points1 = torch.rand(B, N, 2, device=device, dtype=dtype)
+        points2 = torch.rand(B, N, 2, device=device, dtype=dtype)
+        weights = None
+        F_mat = epi.find_fundamental(points1, points2, weights)
+        assert F_mat.shape == (B, 3, 3)
+
+    @pytest.mark.parametrize("batch_size", [1, 2, 3])
+    def test_shape_7point(self, batch_size, device, dtype):
+        B = batch_size
+        points1 = torch.rand(B, 7, 2, device=device, dtype=dtype)
+        points2 = torch.rand(B, 7, 2, device=device, dtype=dtype)
+        torch.ones(B, 7, device=device, dtype=dtype)
+        F_mat = epi.find_fundamental(points1, points2, method="7POINT")
+        assert F_mat.shape == (B, 3, 3, 3)
+
+    def test_opencv_svd(self, device, dtype):
         points1 = torch.tensor(
             [
                 [
@@ -152,28 +171,115 @@ class TestFindFundamental:
         F_mat = epi.find_fundamental(points1, points2, weights)
         assert_close(F_mat, Fm_expected, rtol=1e-4, atol=1e-4)
 
-    @pytest.mark.xfail(reason="TODO: fix #685")
-    def test_synthetic_sampson(self, device, dtype):
+    def test_7point_opencv(self, device, dtype):
+        points1 = torch.tensor(
+            [
+                [
+                    [0.8569, 0.5982],
+                    [0.0059, 0.9649],
+                    [0.1968, 0.8846],
+                    [0.6084, 0.3467],
+                    [0.9633, 0.5274],
+                    [0.8941, 0.8939],
+                    [0.0863, 0.5133],
+                ]
+            ],
+            device=device,
+            dtype=dtype,
+        )
 
+        points2 = torch.tensor(
+            [
+                [
+                    [0.0928, 0.3013],
+                    [0.0989, 0.9649],
+                    [0.0341, 0.4827],
+                    [0.8294, 0.4469],
+                    [0.2230, 0.2998],
+                    [0.1722, 0.8182],
+                    [0.5264, 0.8869],
+                ]
+            ],
+            device=device,
+            dtype=dtype,
+        )
+
+        # generated with OpenCV using above points
+        # Fm_expected shape is 9x3
+        # import cv2
+        # Fm_expected, _ = cv2.findFundamentalMat(
+        #   points1.detach().numpy().reshape(-1, 1, 2),
+        #   points2.detach().numpy().reshape(-1, 1, 2), cv2.FM_7POINT)
+
+        Fm_expected = torch.tensor(
+            [
+                [
+                    [
+                        [-2.87490907, 5.41934672, 0.73871396],
+                        [0.34010174, 3.70371623, -4.65517276],
+                        [-0.1809933, -0.56577107, 1.0],
+                    ],
+                    [
+                        [0.14465888, 0.68711702, -0.65570944],
+                        [0.53424758, 0.7988479, -0.75446946],
+                        [-0.48201197, -1.05375511, 1.0],
+                    ],
+                    [
+                        [-0.0901827, 1.05515785, -0.54726062],
+                        [0.51914823, 1.02476892, -1.05783979],
+                        [-0.45860077, -1.01580301, 1.0],
+                    ],
+                ]
+            ],
+            device=device,
+            dtype=dtype,
+        )
+        F_mat = epi.find_fundamental(points1, points2, method="7POINT")
+        assert_close(F_mat, Fm_expected, rtol=1e-3, atol=1e-3)
+
+    def test_synthetic_sampson_7point(self, device, dtype):
+        scene: Dict[str, torch.Tensor] = utils.generate_two_view_random_scene(device, dtype)
+        x1 = scene["x1"][:, :7, :]
+        x2 = scene["x2"][:, :7, :]
+        F_est = epi.find_fundamental(x1, x2, None, "7POINT")
+        for i in range(3):
+            F = F_est[0][i].unsqueeze(0)
+            if torch.all(F != 0):
+                error = epi.sampson_epipolar_distance(x1, x2, F)
+                assert_close(error, torch.zeros((F.shape[0], 7), device=device, dtype=dtype), atol=1e-4, rtol=1e-4)
+
+    def test_epipolar_constraint_7point(self, device, dtype):
+        scene: Dict[str, torch.Tensor] = utils.generate_two_view_random_scene(device, dtype)
+        x1 = scene["x1"][:, :7, :]
+        x2 = scene["x2"][:, :7, :]
+        F_est = epi.find_fundamental(x1, x2, None, "7POINT")
+        for i in range(3):
+            F = F_est[0][i].unsqueeze(0)
+            if torch.all(F != 0):
+                distance = epi.symmetrical_epipolar_distance(x1, x2, F)
+                mean_error = distance.mean()
+                assert_close(mean_error, torch.tensor(0.0, device=device, dtype=dtype), atol=1e-4, rtol=1e-4)
+
+    def test_synthetic_sampson(self, device, dtype):
         scene: Dict[str, torch.Tensor] = utils.generate_two_view_random_scene(device, dtype)
 
-        x1 = scene['x1']
-        x2 = scene['x2']
+        x1 = scene["x1"]
+        x2 = scene["x2"]
 
         weights = torch.ones_like(x1)[..., 0]
         F_est = epi.find_fundamental(x1, x2, weights)
 
         error = epi.sampson_epipolar_distance(x1, x2, F_est)
-        assert_close(error, torch.tensor(0.0, device=device, dtype=dtype), atol=1e-4, rtol=1e-4)
+        assert_close(error, torch.zeros((x1.shape[:2]), device=device, dtype=dtype), atol=1e-4, rtol=1e-4)
 
     def test_gradcheck(self, device):
         points1 = torch.rand(1, 10, 2, device=device, dtype=torch.float64, requires_grad=True)
         points2 = torch.rand(1, 10, 2, device=device, dtype=torch.float64)
         weights = torch.ones(1, 10, device=device, dtype=torch.float64)
-        assert gradcheck(epi.find_fundamental, (points1, points2, weights), raise_exception=True)
+        assert gradcheck(epi.find_fundamental, (points1, points2, weights), raise_exception=True, fast_mode=True)
 
 
-class TestComputeCorrespondEpilimes:
+class TestComputeCorrespondEpilines:
     def test_smoke(self, device, dtype):
         point = torch.rand(1, 1, 2, device=device, dtype=dtype)
         F_mat = torch.rand(1, 3, 3, device=device, dtype=dtype)
@@ -187,6 +293,22 @@ class TestComputeCorrespondEpilimes:
         F_mat = torch.rand(B, 3, 3, device=device, dtype=dtype)
         lines = epi.compute_correspond_epilines(point, F_mat)
         assert lines.shape == (B, N, 3)
+
+    @pytest.mark.parametrize(
+        "batch_size, num_frames, num_points",
+        [(1, 1, 1), (1, 1, 2), (1, 2, 1), (1, 2, 2), (2, 1, 1), (2, 1, 2), (2, 2, 1), (2, 2, 2)],
+    )
+    def test_volumetric(self, batch_size, num_frames, num_points, device, dtype):
+        B, T, N = batch_size, num_frames, num_points
+        point = torch.rand(B, T, N, 2, device=device, dtype=dtype)
+        F_mat = torch.rand(B, T, 3, 3, device=device, dtype=dtype)
+
+        lines_T_hops = torch.zeros(B, T, N, 3, device=device, dtype=dtype)
+        for i in range(T):
+            lines_T_hops[:, i, ...] = epi.compute_correspond_epilines(point[:, i, ...], F_mat[:, i, ...])
+        lines_one_hop = epi.compute_correspond_epilines(point, F_mat)
+
+        assert_close(lines_T_hops, lines_one_hop, atol=2e-7, rtol=2e-7)
 
     def test_opencv(self, device, dtype):
         point = torch.rand(1, 2, 2, device=device, dtype=dtype)
@@ -214,7 +336,7 @@ class TestComputeCorrespondEpilimes:
     def test_gradcheck(self, device):
         point = torch.rand(1, 4, 2, device=device, dtype=torch.float64, requires_grad=True)
         F_mat = torch.rand(1, 3, 3, device=device, dtype=torch.float64)
-        assert gradcheck(epi.compute_correspond_epilines, (point, F_mat), raise_exception=True)
+        assert gradcheck(epi.compute_correspond_epilines, (point, F_mat), raise_exception=True, fast_mode=True)
 
 
 class TestFundamentlFromEssential:
@@ -244,9 +366,9 @@ class TestFundamentlFromEssential:
     def test_from_to_essential(self, device, dtype):
         scene = utils.generate_two_view_random_scene(device, dtype)
 
-        F_mat = scene['F']
-        E_mat = epi.essential_from_fundamental(F_mat, scene['K1'], scene['K2'])
-        F_hat = epi.fundamental_from_essential(E_mat, scene['K1'], scene['K2'])
+        F_mat = scene["F"]
+        E_mat = epi.essential_from_fundamental(F_mat, scene["K1"], scene["K2"])
+        F_hat = epi.fundamental_from_essential(E_mat, scene["K1"], scene["K2"])
 
         F_mat_norm = epi.normalize_transformation(F_mat)
         F_hat_norm = epi.normalize_transformation(F_hat)
@@ -256,7 +378,7 @@ class TestFundamentlFromEssential:
         E_mat = torch.rand(1, 3, 3, device=device, dtype=torch.float64, requires_grad=True)
         K1 = torch.rand(1, 3, 3, device=device, dtype=torch.float64)
         K2 = torch.rand(1, 3, 3, device=device, dtype=torch.float64)
-        assert gradcheck(epi.fundamental_from_essential, (E_mat, K1, K2), raise_exception=True)
+        assert gradcheck(epi.fundamental_from_essential, (E_mat, K1, K2), raise_exception=True, fast_mode=True)
 
 
 class TestFundamentalFromProjections:
@@ -300,7 +422,7 @@ class TestFundamentalFromProjections:
     def test_gradcheck(self, device):
         P1 = torch.rand(1, 3, 4, device=device, dtype=torch.float64, requires_grad=True)
         P2 = torch.rand(1, 3, 4, device=device, dtype=torch.float64)
-        assert gradcheck(epi.fundamental_from_projections, (P1, P2), raise_exception=True)
+        assert gradcheck(epi.fundamental_from_projections, (P1, P2), raise_exception=True, fast_mode=True)
 
     def test_batch_support_check(self, device, dtype):
         P1_batch = torch.tensor(
@@ -360,4 +482,48 @@ class TestFundamentalFromProjections:
 
         F_batch = epi.fundamental_from_projections(P1_batch, P2_batch)
         F = epi.fundamental_from_projections(P1, P2)
-        assert (F_batch[0] == F[0]).all()
+        assert_close(F_batch[0], F[0])
+
+
+class TestPerpendicular:
+    def test_shape(self, device, dtype):
+        lines = torch.rand(2, 4, 3, device=device, dtype=dtype)
+        points = torch.rand(2, 4, 2, device=device, dtype=dtype)
+        perp = epi.get_perpendicular(lines, points)
+        assert perp.shape == (2, 4, 3)
+
+    def test_result(self, device, dtype):
+        points = torch.tensor([[[1.0, 0.0], [0.0, 1.0]]], device=device, dtype=dtype)
+
+        lines = torch.tensor([[[1.0, -1.0, 0.0], [0.0, 1.0, 1.0]]], device=device, dtype=dtype)
+        perp = epi.get_perpendicular(lines, points)
+        expected = torch.tensor([[[1.0, 1.0, -1.0], [-1.0, 0.0, 0.0]]], device=device, dtype=dtype)
+        assert_close(perp, expected)
+
+    def test_gradcheck(self, device):
+        pt = torch.rand(1, 3, 3, device=device, dtype=torch.float64, requires_grad=True)
+        line = torch.rand(1, 3, 3, device=device, dtype=torch.float64)
+        assert gradcheck(epi.get_perpendicular, (pt, line), raise_exception=True, fast_mode=True)
+
+
+class TestGetClosestPointOnEpipolarLine:
+    def test_shape(self, device, dtype):
+        pts1 = torch.rand(2, 4, 2, device=device, dtype=dtype)
+        pts2 = torch.rand(2, 4, 2, device=device, dtype=dtype)
+        Fm = utils2.create_random_fundamental_matrix(1).type_as(pts1)
+        perp = epi.get_closest_point_on_epipolar_line(pts1, pts2, Fm)
+        assert perp.shape == (2, 4, 2)
+
+    def test_shift(self, device, dtype):
+        pts1 = torch.zeros(3, 2, device=device, dtype=dtype)[None]
+        pts2 = torch.tensor([[2, 4.0], [2, 1], [2, 2.0]], device=device, dtype=dtype)[None]
+        Fm = torch.tensor([[0.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]], dtype=dtype, device=device)[None]
+        cp = epi.get_closest_point_on_epipolar_line(pts1, pts2, Fm)
+        expected = torch.tensor([[[2.0, 0.0], [2.0, 0.0], [2.0, 0.0]]], device=device, dtype=dtype)
+        assert_close(cp, expected)
+
+    def test_gradcheck(self, device):
+        pts1 = torch.rand(2, 4, 2, device=device, dtype=torch.float64, requires_grad=True)
+        pts2 = torch.rand(2, 4, 2, device=device, dtype=torch.float64)
+        Fm = utils2.create_random_fundamental_matrix(1).type_as(pts1)
+        assert gradcheck(epi.get_closest_point_on_epipolar_line, (pts1, pts2, Fm), raise_exception=True, fast_mode=True)

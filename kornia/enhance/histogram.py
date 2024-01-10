@@ -1,9 +1,6 @@
-import math
 from typing import Optional, Tuple
 
 import torch
-
-__all__ = ["histogram", "histogram2d", "image_histogram2d"]
 
 
 def marginal_pdf(
@@ -34,13 +31,13 @@ def marginal_pdf(
         raise TypeError(f"Input sigma type is not a torch.Tensor. Got {type(sigma)}")
 
     if not values.dim() == 3:
-        raise ValueError("Input values must be a of the shape BxNx1." " Got {}".format(values.shape))
+        raise ValueError(f"Input values must be a of the shape BxNx1. Got {values.shape}")
 
     if not bins.dim() == 1:
-        raise ValueError("Input bins must be a of the shape NUM_BINS" " Got {}".format(bins.shape))
+        raise ValueError(f"Input bins must be a of the shape NUM_BINS. Got {bins.shape}")
 
     if not sigma.dim() == 0:
-        raise ValueError("Input sigma must be a of the shape 1" " Got {}".format(sigma.shape))
+        raise ValueError(f"Input sigma must be a of the shape 1. Got {sigma.shape}")
 
     residuals = values - bins.unsqueeze(0).unsqueeze(0)
     kernel_values = torch.exp(-0.5 * (residuals / sigma).pow(2))
@@ -64,7 +61,6 @@ def joint_pdf(kernel_values1: torch.Tensor, kernel_values2: torch.Tensor, epsilo
     Returns:
         shape [BxNUM_BINSxNUM_BINS].
     """
-
     if not isinstance(kernel_values1, torch.Tensor):
         raise TypeError(f"Input kernel_values1 type is not a torch.Tensor. Got {type(kernel_values1)}")
 
@@ -72,15 +68,15 @@ def joint_pdf(kernel_values1: torch.Tensor, kernel_values2: torch.Tensor, epsilo
         raise TypeError(f"Input kernel_values2 type is not a torch.Tensor. Got {type(kernel_values2)}")
 
     if not kernel_values1.dim() == 3:
-        raise ValueError("Input kernel_values1 must be a of the shape BxN." " Got {}".format(kernel_values1.shape))
+        raise ValueError(f"Input kernel_values1 must be a of the shape BxN. Got {kernel_values1.shape}")
 
     if not kernel_values2.dim() == 3:
-        raise ValueError("Input kernel_values2 must be a of the shape BxN." " Got {}".format(kernel_values2.shape))
+        raise ValueError(f"Input kernel_values2 must be a of the shape BxN. Got {kernel_values2.shape}")
 
     if kernel_values1.shape != kernel_values2.shape:
         raise ValueError(
             "Inputs kernel_values1 and kernel_values2 must have the same shape."
-            " Got {} and {}".format(kernel_values1.shape, kernel_values2.shape)
+            f" Got {kernel_values1.shape} and {kernel_values2.shape}"
         )
 
     joint_kernel_values = torch.matmul(kernel_values1.transpose(1, 2), kernel_values2)
@@ -111,7 +107,6 @@ def histogram(x: torch.Tensor, bins: torch.Tensor, bandwidth: torch.Tensor, epsi
         >>> hist.shape
         torch.Size([1, 128])
     """
-
     pdf, _ = marginal_pdf(x.unsqueeze(2), bins, bandwidth, epsilon)
 
     return pdf
@@ -201,7 +196,7 @@ def image_histogram2d(
         raise ValueError(f"Bins' centers must be a torch.Tensor of the shape (n_bins,). Got {centers.shape}.")
 
     if not isinstance(min, float):
-        raise TypeError(f'Type of lower end of the range is not a float. Got {type(min)}.')
+        raise TypeError(f"Type of lower end of the range is not a float. Got {type(min)}.")
 
     if not isinstance(max, float):
         raise TypeError(f"Type of upper end of the range is not a float. Got {type(min)}.")
@@ -217,25 +212,29 @@ def image_histogram2d(
 
     if bandwidth is None:
         bandwidth = (max - min) / n_bins
+
     if centers is None:
-        centers = min + bandwidth * (torch.arange(n_bins, device=image.device, dtype=image.dtype).float() + 0.5)
+        centers = min + bandwidth * (torch.arange(n_bins, device=image.device, dtype=image.dtype) + 0.5)
     centers = centers.reshape(-1, 1, 1, 1, 1)
+
     u = torch.abs(image.unsqueeze(0) - centers) / bandwidth
-    if kernel == "triangular":
+
+    if kernel == "gaussian":
+        kernel_values = torch.exp(-0.5 * u**2)
+    elif kernel in ("triangular", "uniform", "epanechnikov"):
+        # compute the mask and cast to floating point
         mask = (u <= 1).to(u.dtype)
-        kernel_values = (1 - u) * mask
-    elif kernel == "gaussian":
-        kernel_values = torch.exp(-0.5 * u ** 2)
-    elif kernel == "uniform":
-        mask = (u <= 1).to(u.dtype)
-        kernel_values = torch.ones_like(u, dtype=u.dtype, device=u.device) * mask
-    elif kernel == "epanechnikov":
-        mask = (u <= 1).to(u.dtype)
-        kernel_values = (1 - u ** 2) * mask
+        if kernel == "triangular":
+            kernel_values = (1.0 - u) * mask
+        elif kernel == "uniform":
+            kernel_values = mask
+        else:  # kernel == "epanechnikov"
+            kernel_values = (1.0 - u**2) * mask
     else:
-        raise ValueError(f"Kernel must be 'triangular', 'gaussian', " f"'uniform' or 'epanechnikov'. Got {kernel}.")
+        raise ValueError(f"Kernel must be 'triangular', 'gaussian', 'uniform' or 'epanechnikov'. Got {kernel}.")
 
     hist = torch.sum(kernel_values, dim=(-2, -1)).permute(1, 2, 0)
+
     if return_pdf:
         normalization = torch.sum(hist, dim=-1, keepdim=True) + eps
         pdf = hist / normalization
@@ -251,4 +250,5 @@ def image_histogram2d(
         hist = hist.squeeze()
     elif image.dim() == 3:
         hist = hist.squeeze(0)
-    return hist, torch.zeros_like(hist, dtype=hist.dtype, device=hist.device)
+
+    return hist, torch.zeros_like(hist)

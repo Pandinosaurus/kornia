@@ -1,29 +1,45 @@
-from .gray import bgr_to_grayscale, BgrToGrayscale, grayscale_to_rgb, GrayscaleToRgb, rgb_to_grayscale, RgbToGrayscale
-from .hls import hls_to_rgb, HlsToRgb, rgb_to_hls, RgbToHls
-from .hsv import hsv_to_rgb, HsvToRgb, rgb_to_hsv, RgbToHsv
-from .lab import lab_to_rgb, LabToRgb, rgb_to_lab, RgbToLab
-from .luv import luv_to_rgb, LuvToRgb, rgb_to_luv, RgbToLuv
+from .colormap import AUTUMN, ApplyColorMap, ColorMap, RGBColor, apply_colormap
+from .gray import BgrToGrayscale, GrayscaleToRgb, RgbToGrayscale, bgr_to_grayscale, grayscale_to_rgb, rgb_to_grayscale
+from .hls import HlsToRgb, RgbToHls, hls_to_rgb, rgb_to_hls
+from .hsv import HsvToRgb, RgbToHsv, hsv_to_rgb, rgb_to_hsv
+from .lab import LabToRgb, RgbToLab, lab_to_rgb, rgb_to_lab
+from .luv import LuvToRgb, RgbToLuv, luv_to_rgb, rgb_to_luv
+from .raw import CFA, RawToRgb, RawToRgb2x2Downscaled, RgbToRaw, raw_to_rgb, raw_to_rgb_2x2_downscaled, rgb_to_raw
 from .rgb import (
-    bgr_to_rgb,
-    bgr_to_rgba,
     BgrToRgb,
     BgrToRgba,
-    linear_rgb_to_rgb,
     LinearRgbToRgb,
-    rgb_to_bgr,
-    rgb_to_linear_rgb,
-    rgb_to_rgba,
-    rgba_to_bgr,
-    rgba_to_rgb,
     RgbaToBgr,
     RgbaToRgb,
     RgbToBgr,
     RgbToLinearRgb,
     RgbToRgba,
+    bgr_to_rgb,
+    bgr_to_rgba,
+    linear_rgb_to_rgb,
+    rgb_to_bgr,
+    rgb_to_linear_rgb,
+    rgb_to_rgba,
+    rgba_to_bgr,
+    rgba_to_rgb,
 )
-from .xyz import rgb_to_xyz, RgbToXyz, xyz_to_rgb, XyzToRgb
-from .ycbcr import rgb_to_ycbcr, RgbToYcbcr, ycbcr_to_rgb, YcbcrToRgb
-from .yuv import rgb_to_yuv, RgbToYuv, yuv_to_rgb, YuvToRgb
+from .sepia import Sepia, sepia_from_rgb
+from .xyz import RgbToXyz, XyzToRgb, rgb_to_xyz, xyz_to_rgb
+from .ycbcr import RgbToYcbcr, YcbcrToRgb, rgb_to_y, rgb_to_ycbcr, ycbcr_to_rgb
+from .yuv import (
+    RgbToYuv,
+    RgbToYuv420,
+    RgbToYuv422,
+    Yuv420ToRgb,
+    Yuv422ToRgb,
+    YuvToRgb,
+    rgb_to_yuv,
+    rgb_to_yuv420,
+    rgb_to_yuv422,
+    yuv420_to_rgb,
+    yuv422_to_rgb,
+    yuv_to_rgb,
+)
 
 __all__ = [
     "grayscale_to_rgb",
@@ -38,8 +54,13 @@ __all__ = [
     "hls_to_rgb",
     "rgb_to_ycbcr",
     "ycbcr_to_rgb",
+    "rgb_to_y",
     "rgb_to_yuv",
+    "rgb_to_yuv420",
+    "rgb_to_yuv422",
     "yuv_to_rgb",
+    "yuv420_to_rgb",
+    "yuv422_to_rgb",
     "rgb_to_xyz",
     "xyz_to_rgb",
     "rgb_to_lab",
@@ -56,11 +77,44 @@ __all__ = [
     "RgbToYcbcr",
     "YcbcrToRgb",
     "RgbToYuv",
+    "RgbToYuv420",
+    "RgbToYuv422",
     "YuvToRgb",
+    "Yuv420ToRgb",
+    "Yuv422ToRgb",
     "RgbToXyz",
     "XyzToRgb",
     "RgbToLuv",
     "LuvToRgb",
     "LabToRgb",
     "RgbToLab",
+    "RgbToRaw",
+    "RawToRgb",
+    "RawToRgb2x2Downscaled",
+    "raw_to_rgb",
+    "rgb_to_raw",
+    "raw_to_rgb_2x2_downscaled",
+    "CFA",
+    "GrayscaleToRgb",
+    "luv_to_rgb",
+    "rgb_to_luv",
+    "bgr_to_rgba",
+    "BgrToRgba",
+    "linear_rgb_to_rgb",
+    "LinearRgbToRgb",
+    "rgb_to_linear_rgb",
+    "rgba_to_rgb",
+    "rgba_to_bgr",
+    "RgbaToRgb",
+    "RgbaToBgr",
+    "RgbToLinearRgb",
+    "Sepia",
+    "sepia",
+    "AUTUMN",
+    "ApplyColorMap",
+    "ColorMap",
+    "RGBColor",
+    "apply_colormap",
 ]
+
+sepia = sepia_from_rgb

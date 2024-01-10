@@ -5,26 +5,30 @@ transformers/blob/master/fast_transformers/attention/linear_attention.py."""
 from typing import Optional
 
 import torch
-from torch.nn import Dropout, Module
+from torch.nn import Dropout
+
+from kornia.core import Module, Tensor
 
 
-def elu_feature_map(x):
+def elu_feature_map(x: Tensor) -> Tensor:
     return torch.nn.functional.elu(x) + 1
 
 
 class LinearAttention(Module):
-    def __init__(self, eps=1e-6):
+    def __init__(self, eps: float = 1e-6) -> None:
         super().__init__()
         self.feature_map = elu_feature_map
         self.eps = eps
 
-    def forward(self,
-                queries: torch.Tensor,
-                keys: torch.Tensor,
-                values: torch.Tensor,
-                q_mask: Optional[torch.Tensor] = None,
-                kv_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """ Multi-Head linear attention proposed in "Transformers are RNNs"
+    def forward(
+        self,
+        queries: Tensor,
+        keys: Tensor,
+        values: Tensor,
+        q_mask: Optional[Tensor] = None,
+        kv_mask: Optional[Tensor] = None,
+    ) -> Tensor:
+        """Multi-Head linear attention proposed in "Transformers are RNNs"
         Args:
             queries: [N, L, H, D]
             keys: [N, S, H, D]
@@ -54,12 +58,19 @@ class LinearAttention(Module):
 
 
 class FullAttention(Module):
-    def __init__(self, use_dropout=False, attention_dropout=0.1):
+    def __init__(self, use_dropout: bool = False, attention_dropout: float = 0.1) -> None:
         super().__init__()
         self.use_dropout = use_dropout
         self.dropout = Dropout(attention_dropout)
 
-    def forward(self, queries, keys, values, q_mask=None, kv_mask=None):
+    def forward(
+        self,
+        queries: Tensor,
+        keys: Tensor,
+        values: Tensor,
+        q_mask: Optional[Tensor] = None,
+        kv_mask: Optional[Tensor] = None,
+    ) -> Tensor:
         """Multi-head scaled dot-product attention, a.k.a full attention.
 
         Args:
@@ -71,14 +82,13 @@ class FullAttention(Module):
         Returns:
             queried_values: (N, L, H, D)
         """
-
         # Compute the unnormalized attention and apply the masks
         QK = torch.einsum("nlhd,nshd->nlsh", queries, keys)
-        if kv_mask is not None:
-            QK.masked_fill_(~(q_mask[:, :, None, None] * kv_mask[:, None, :, None]), float('-inf'))
+        if kv_mask is not None and q_mask is not None:
+            QK.masked_fill_(~(q_mask[:, :, None, None] * kv_mask[:, None, :, None]), float("-inf"))
 
         # Compute the attention and the weighted average
-        softmax_temp = 1. / queries.size(3)**.5  # sqrt(D)
+        softmax_temp = 1.0 / queries.size(3) ** 0.5  # sqrt(D)
         A = torch.softmax(softmax_temp * QK, dim=2)
         if self.use_dropout:
             A = self.dropout(A)

@@ -1,7 +1,12 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from __future__ import annotations
 
+from typing import Optional
+
+import torch
+from torch import nn
+
+from kornia.core import Tensor, tensor
+from kornia.core.check import KORNIA_CHECK, KORNIA_CHECK_IS_TENSOR, KORNIA_CHECK_SHAPE
 from kornia.utils.one_hot import one_hot
 
 # based on:
@@ -9,13 +14,13 @@ from kornia.utils.one_hot import one_hot
 
 
 def focal_loss(
-    input: torch.Tensor,
-    target: torch.Tensor,
-    alpha: float,
+    pred: Tensor,
+    target: Tensor,
+    alpha: Optional[float],
     gamma: float = 2.0,
-    reduction: str = 'none',
-    eps: float = 1e-8,
-) -> torch.Tensor:
+    reduction: str = "none",
+    weight: Optional[Tensor] = None,
+) -> Tensor:
     r"""Criterion that computes Focal loss.
 
     According to :cite:`lin2018focal`, the Focal loss is computed as follows:
@@ -28,8 +33,9 @@ def focal_loss(
        - :math:`p_t` is the model's estimated probability for each class.
 
     Args:
-        input: logits tensor with shape :math:`(N, C, *)` where C = number of classes.
-        target: labels tensor with shape :math:`(N, *)` where each value is :math:`0 ≤ targets[i] ≤ C−1`.
+        pred: logits tensor with shape :math:`(N, C, *)` where C = number of classes.
+        target: labels tensor with shape :math:`(N, *)` where each value is an integer
+          representing correct classification :math:`target[i] \in [0, C)`.
         alpha: Weighting factor :math:`\alpha \in [0, 1]`.
         gamma: Focusing parameter :math:`\gamma >= 0`.
         reduction: Specifies the reduction to apply to the
@@ -37,52 +43,66 @@ def focal_loss(
           will be applied, ``'mean'``: the sum of the output will be divided by
           the number of elements in the output, ``'sum'``: the output will be
           summed.
-        eps: Scalar to enforce numerical stabiliy.
+        weight: weights for classes with shape :math:`(num\_of\_classes,)`.
 
     Return:
         the computed loss.
 
     Example:
-        >>> N = 5  # num_classes
-        >>> input = torch.randn(1, N, 3, 5, requires_grad=True)
-        >>> target = torch.empty(1, 3, 5, dtype=torch.long).random_(N)
-        >>> output = focal_loss(input, target, alpha=0.5, gamma=2.0, reduction='mean')
+        >>> C = 5  # num_classes
+        >>> pred = torch.randn(1, C, 3, 5, requires_grad=True)
+        >>> target = torch.randint(C, (1, 3, 5))
+        >>> kwargs = {"alpha": 0.5, "gamma": 2.0, "reduction": 'mean'}
+        >>> output = focal_loss(pred, target, **kwargs)
         >>> output.backward()
     """
-    if not isinstance(input, torch.Tensor):
-        raise TypeError(f"Input type is not a torch.Tensor. Got {type(input)}")
 
-    if not len(input.shape) >= 2:
-        raise ValueError(f"Invalid input shape, we expect BxCx*. Got: {input.shape}")
-
-    if input.size(0) != target.size(0):
-        raise ValueError(f'Expected input batch_size ({input.size(0)}) to match target batch_size ({target.size(0)}).')
-
-    n = input.size(0)
-    out_size = (n,) + input.size()[2:]
-    if target.size()[1:] != input.size()[2:]:
-        raise ValueError(f'Expected target size {out_size}, got {target.size()}')
-
-    if not input.device == target.device:
-        raise ValueError(f"input and target must be in the same device. Got: {input.device} and {target.device}")
-
-    # compute softmax over the classes axis
-    input_soft: torch.Tensor = F.softmax(input, dim=1) + eps
+    KORNIA_CHECK_SHAPE(pred, ["B", "C", "*"])
+    out_size = (pred.shape[0],) + pred.shape[2:]
+    KORNIA_CHECK(
+        (pred.shape[0] == target.shape[0] and target.shape[1:] == pred.shape[2:]),
+        f"Expected target size {out_size}, got {target.shape}",
+    )
+    KORNIA_CHECK(
+        pred.device == target.device,
+        f"pred and target must be in the same device. Got: {pred.device} and {target.device}",
+    )
 
     # create the labels one hot tensor
-    target_one_hot: torch.Tensor = one_hot(target, num_classes=input.shape[1], device=input.device, dtype=input.dtype)
+    target_one_hot: Tensor = one_hot(target, num_classes=pred.shape[1], device=pred.device, dtype=pred.dtype)
+
+    # compute softmax over the classes axis
+    log_pred_soft: Tensor = pred.log_softmax(1)
 
     # compute the actual focal loss
-    weight = torch.pow(-input_soft + 1.0, gamma)
+    loss_tmp: Tensor = -torch.pow(1.0 - log_pred_soft.exp(), gamma) * log_pred_soft * target_one_hot
 
-    focal = -alpha * weight * torch.log(input_soft)
-    loss_tmp = torch.sum(target_one_hot * focal, dim=1)
+    num_of_classes = pred.shape[1]
+    broadcast_dims = [-1] + [1] * len(pred.shape[2:])
+    if alpha is not None:
+        alpha_fac = tensor([1 - alpha] + [alpha] * (num_of_classes - 1), dtype=loss_tmp.dtype, device=loss_tmp.device)
+        alpha_fac = alpha_fac.view(broadcast_dims)
+        loss_tmp = alpha_fac * loss_tmp
 
-    if reduction == 'none':
+    if weight is not None:
+        KORNIA_CHECK_IS_TENSOR(weight, "weight must be Tensor or None.")
+        KORNIA_CHECK(
+            (weight.shape[0] == num_of_classes and weight.numel() == num_of_classes),
+            f"weight shape must be (num_of_classes,): ({num_of_classes},), got {weight.shape}",
+        )
+        KORNIA_CHECK(
+            weight.device == pred.device,
+            f"weight and pred must be in the same device. Got: {weight.device} and {pred.device}",
+        )
+
+        weight = weight.view(broadcast_dims)
+        loss_tmp = weight * loss_tmp
+
+    if reduction == "none":
         loss = loss_tmp
-    elif reduction == 'mean':
+    elif reduction == "mean":
         loss = torch.mean(loss_tmp)
-    elif reduction == 'sum':
+    elif reduction == "sum":
         loss = torch.sum(loss_tmp)
     else:
         raise NotImplementedError(f"Invalid reduction mode: {reduction}")
@@ -109,43 +129,48 @@ class FocalLoss(nn.Module):
           will be applied, ``'mean'``: the sum of the output will be divided by
           the number of elements in the output, ``'sum'``: the output will be
           summed.
-        eps: Scalar to enforce numerical stabiliy.
+        weight: weights for classes with shape :math:`(num\_of\_classes,)`.
 
     Shape:
-        - Input: :math:`(N, C, *)` where C = number of classes.
-        - Target: :math:`(N, *)` where each value is
-          :math:`0 ≤ targets[i] ≤ C−1`.
+        - Pred: :math:`(N, C, *)` where C = number of classes.
+        - Target: :math:`(N, *)` where each value is an integer
+          representing correct classification :math:`target[i] \in [0, C)`.
 
     Example:
-        >>> N = 5  # num_classes
+        >>> C = 5  # num_classes
+        >>> pred = torch.randn(1, C, 3, 5, requires_grad=True)
+        >>> target = torch.randint(C, (1, 3, 5))
         >>> kwargs = {"alpha": 0.5, "gamma": 2.0, "reduction": 'mean'}
         >>> criterion = FocalLoss(**kwargs)
-        >>> input = torch.randn(1, N, 3, 5, requires_grad=True)
-        >>> target = torch.empty(1, 3, 5, dtype=torch.long).random_(N)
-        >>> output = criterion(input, target)
+        >>> output = criterion(pred, target)
         >>> output.backward()
     """
 
-    def __init__(self, alpha: float, gamma: float = 2.0, reduction: str = 'none', eps: float = 1e-8) -> None:
+    def __init__(
+        self, alpha: Optional[float], gamma: float = 2.0, reduction: str = "none", weight: Optional[Tensor] = None
+    ) -> None:
         super().__init__()
-        self.alpha: float = alpha
+        self.alpha: Optional[float] = alpha
         self.gamma: float = gamma
         self.reduction: str = reduction
-        self.eps: float = eps
+        self.weight: Optional[Tensor] = weight
 
-    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        return focal_loss(input, target, self.alpha, self.gamma, self.reduction, self.eps)
+    def forward(self, pred: Tensor, target: Tensor) -> Tensor:
+        return focal_loss(pred, target, self.alpha, self.gamma, self.reduction, self.weight)
 
 
 def binary_focal_loss_with_logits(
-    input: torch.Tensor,
-    target: torch.Tensor,
-    alpha: float = 0.25,
+    pred: Tensor,
+    target: Tensor,
+    alpha: Optional[float] = 0.25,
     gamma: float = 2.0,
-    reduction: str = 'none',
-    eps: float = 1e-8,
-) -> torch.Tensor:
-    r"""Function that computes Binary Focal loss.
+    reduction: str = "none",
+    pos_weight: Optional[Tensor] = None,
+    weight: Optional[Tensor] = None,
+) -> Tensor:
+    r"""Criterion that computes Binary Focal loss.
+
+    According to :cite:`lin2018focal`, the Focal loss is computed as follows:
 
     .. math::
 
@@ -155,47 +180,84 @@ def binary_focal_loss_with_logits(
        - :math:`p_t` is the model's estimated probability for each class.
 
     Args:
-        input: input data tensor of arbitrary shape.
-        target: the target tensor with shape matching input.
-        alpha: Weighting factor for the rare class :math:`\alpha \in [0, 1]`.
+        pred: logits tensor with shape :math:`(N, C, *)` where C = number of classes.
+        target: labels tensor with the same shape as pred :math:`(N, C, *)`
+          where each value is between 0 and 1.
+        alpha: Weighting factor :math:`\alpha \in [0, 1]`.
         gamma: Focusing parameter :math:`\gamma >= 0`.
         reduction: Specifies the reduction to apply to the
           output: ``'none'`` | ``'mean'`` | ``'sum'``. ``'none'``: no reduction
           will be applied, ``'mean'``: the sum of the output will be divided by
           the number of elements in the output, ``'sum'``: the output will be
           summed.
-        eps: for numerically stability when dividing.
+        pos_weight: a weight of positive examples with shape :math:`(num\_of\_classes,)`.
+          It is possible to trade off recall and precision by adding weights to positive examples.
+        weight: weights for classes with shape :math:`(num\_of\_classes,)`.
 
     Returns:
         the computed loss.
 
     Examples:
+        >>> C = 3  # num_classes
+        >>> pred = torch.randn(1, C, 5, requires_grad=True)
+        >>> target = torch.randint(2, (1, C, 5))
         >>> kwargs = {"alpha": 0.25, "gamma": 2.0, "reduction": 'mean'}
-        >>> logits = torch.tensor([[[6.325]],[[5.26]],[[87.49]]])
-        >>> labels = torch.tensor([[[1.]],[[1.]],[[0.]]])
-        >>> binary_focal_loss_with_logits(logits, labels, **kwargs)
-        tensor(4.6052)
+        >>> output = binary_focal_loss_with_logits(pred, target, **kwargs)
+        >>> output.backward()
     """
 
-    if not isinstance(input, torch.Tensor):
-        raise TypeError(f"Input type is not a torch.Tensor. Got {type(input)}")
+    KORNIA_CHECK_SHAPE(pred, ["B", "C", "*"])
+    KORNIA_CHECK(pred.shape == target.shape, f"Expected target size {pred.shape}, got {target.shape}")
+    KORNIA_CHECK(
+        pred.device == target.device,
+        f"pred and target must be in the same device. Got: {pred.device} and {target.device}",
+    )
 
-    if not len(input.shape) >= 2:
-        raise ValueError(f"Invalid input shape, we expect BxCx*. Got: {input.shape}")
+    log_probs_pos: Tensor = nn.functional.logsigmoid(pred)
+    log_probs_neg: Tensor = nn.functional.logsigmoid(-pred)
 
-    if input.size(0) != target.size(0):
-        raise ValueError(f'Expected input batch_size ({input.size(0)}) to match target batch_size ({target.size(0)}).')
+    pos_term: Tensor = -log_probs_neg.exp().pow(gamma) * target * log_probs_pos
+    neg_term: Tensor = -log_probs_pos.exp().pow(gamma) * (1.0 - target) * log_probs_neg
+    if alpha is not None:
+        pos_term = alpha * pos_term
+        neg_term = (1.0 - alpha) * neg_term
 
-    probs = torch.sigmoid(input)
-    loss_tmp = -alpha * torch.pow((1.0 - probs + eps), gamma) * target * torch.log(probs + eps) - (
-        1 - alpha
-    ) * torch.pow(probs + eps, gamma) * (1.0 - target) * torch.log(1.0 - probs + eps)
+    num_of_classes = pred.shape[1]
+    broadcast_dims = [-1] + [1] * len(pred.shape[2:])
+    if pos_weight is not None:
+        KORNIA_CHECK_IS_TENSOR(pos_weight, "pos_weight must be Tensor or None.")
+        KORNIA_CHECK(
+            (pos_weight.shape[0] == num_of_classes and pos_weight.numel() == num_of_classes),
+            f"pos_weight shape must be (num_of_classes,): ({num_of_classes},), got {pos_weight.shape}",
+        )
+        KORNIA_CHECK(
+            pos_weight.device == pred.device,
+            f"pos_weight and pred must be in the same device. Got: {pos_weight.device} and {pred.device}",
+        )
 
-    if reduction == 'none':
+        pos_weight = pos_weight.view(broadcast_dims)
+        pos_term = pos_weight * pos_term
+
+    loss_tmp: Tensor = pos_term + neg_term
+    if weight is not None:
+        KORNIA_CHECK_IS_TENSOR(weight, "weight must be Tensor or None.")
+        KORNIA_CHECK(
+            (weight.shape[0] == num_of_classes and weight.numel() == num_of_classes),
+            f"weight shape must be (num_of_classes,): ({num_of_classes},), got {weight.shape}",
+        )
+        KORNIA_CHECK(
+            weight.device == pred.device,
+            f"weight and pred must be in the same device. Got: {weight.device} and {pred.device}",
+        )
+
+        weight = weight.view(broadcast_dims)
+        loss_tmp = weight * loss_tmp
+
+    if reduction == "none":
         loss = loss_tmp
-    elif reduction == 'mean':
+    elif reduction == "mean":
         loss = torch.mean(loss_tmp)
-    elif reduction == 'sum':
+    elif reduction == "sum":
         loss = torch.sum(loss_tmp)
     else:
         raise NotImplementedError(f"Invalid reduction mode: {reduction}")
@@ -215,34 +277,48 @@ class BinaryFocalLossWithLogits(nn.Module):
        - :math:`p_t` is the model's estimated probability for each class.
 
     Args:
-        alpha): Weighting factor for the rare class :math:`\alpha \in [0, 1]`.
+        alpha: Weighting factor :math:`\alpha \in [0, 1]`.
         gamma: Focusing parameter :math:`\gamma >= 0`.
         reduction: Specifies the reduction to apply to the
           output: ``'none'`` | ``'mean'`` | ``'sum'``. ``'none'``: no reduction
           will be applied, ``'mean'``: the sum of the output will be divided by
           the number of elements in the output, ``'sum'``: the output will be
           summed.
+        pos_weight: a weight of positive examples with shape :math:`(num\_of\_classes,)`.
+          It is possible to trade off recall and precision by adding weights to positive examples.
+        weight: weights for classes with shape :math:`(num\_of\_classes,)`.
 
     Shape:
-        - Input: :math:`(N, 1, *)`.
-        - Target: :math:`(N, 1, *)`.
+        - Pred: :math:`(N, C, *)` where C = number of classes.
+        - Target: the same shape as Pred :math:`(N, C, *)`
+          where each value is between 0 and 1.
 
     Examples:
-        >>> N = 1  # num_classes
+        >>> C = 3  # num_classes
+        >>> pred = torch.randn(1, C, 5, requires_grad=True)
+        >>> target = torch.randint(2, (1, C, 5))
         >>> kwargs = {"alpha": 0.25, "gamma": 2.0, "reduction": 'mean'}
-        >>> loss = BinaryFocalLossWithLogits(**kwargs)
-        >>> input = torch.randn(1, N, 3, 5, requires_grad=True)
-        >>> target = torch.empty(1, 3, 5, dtype=torch.long).random_(N)
-        >>> output = loss(input, target)
+        >>> criterion = BinaryFocalLossWithLogits(**kwargs)
+        >>> output = criterion(pred, target)
         >>> output.backward()
     """
 
-    def __init__(self, alpha: float, gamma: float = 2.0, reduction: str = 'none') -> None:
+    def __init__(
+        self,
+        alpha: Optional[float],
+        gamma: float = 2.0,
+        reduction: str = "none",
+        pos_weight: Optional[Tensor] = None,
+        weight: Optional[Tensor] = None,
+    ) -> None:
         super().__init__()
-        self.alpha: float = alpha
+        self.alpha: Optional[float] = alpha
         self.gamma: float = gamma
         self.reduction: str = reduction
-        self.eps: float = 1e-8
+        self.pos_weight: Optional[Tensor] = pos_weight
+        self.weight: Optional[Tensor] = weight
 
-    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        return binary_focal_loss_with_logits(input, target, self.alpha, self.gamma, self.reduction, self.eps)
+    def forward(self, pred: Tensor, target: Tensor) -> Tensor:
+        return binary_focal_loss_with_logits(
+            pred, target, self.alpha, self.gamma, self.reduction, self.pos_weight, self.weight
+        )

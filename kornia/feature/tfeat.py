@@ -1,18 +1,15 @@
 from typing import Dict
 
 import torch
-import torch.nn as nn
+from torch import nn
+
+from kornia.core.check import KORNIA_CHECK_SHAPE
+from kornia.utils.helpers import map_location_to_cpu
 
 urls: Dict[str, str] = {}
-urls[
-    "liberty"
-] = "https://github.com/vbalnt/tfeat/raw/master/pretrained-models/tfeat-liberty.params"  # pylint: disable
-urls[
-    "notredame"
-] = "https://github.com/vbalnt/tfeat/raw/master/pretrained-models/tfeat-notredame.params"  # pylint: disable
-urls[
-    "yosemite"
-] = "https://github.com/vbalnt/tfeat/raw/master/pretrained-models/tfeat-yosemite.params"  # pylint: disable
+urls["liberty"] = "https://github.com/vbalnt/tfeat/raw/master/pretrained-models/tfeat-liberty.params"  # pylint: disable
+urls["notredame"] = "https://github.com/vbalnt/tfeat/raw/master/pretrained-models/tfeat-notredame.params"  # pylint: disable
+urls["yosemite"] = "https://github.com/vbalnt/tfeat/raw/master/pretrained-models/tfeat-yosemite.params"  # pylint: disable
 
 
 class TFeat(nn.Module):
@@ -26,17 +23,19 @@ class TFeat(nn.Module):
         pretrained: Download and set pretrained weights to the model.
 
     Returns:
-        TFeat descriptor of the patches.
+        torch.Tensor: TFeat descriptor of the patches.
 
     Shape:
-        - Input: (B, 1, 32, 32)
-        - Output: (B, 128)
+        - Input: :math:`(B, 1, 32, 32)`
+        - Output: :math:`(B, 128)`
 
     Examples:
         >>> input = torch.rand(16, 1, 32, 32)
         >>> tfeat = TFeat()
         >>> descs = tfeat(input) # 16x128
     """
+
+    patch_size = 32
 
     def __init__(self, pretrained: bool = False) -> None:
         super().__init__()
@@ -51,13 +50,12 @@ class TFeat(nn.Module):
         self.descr = nn.Sequential(nn.Linear(64 * 8 * 8, 128), nn.Tanh())
         # use torch.hub to load pretrained model
         if pretrained:
-            pretrained_dict = torch.hub.load_state_dict_from_url(
-                urls['liberty'], map_location=lambda storage, loc: storage
-            )
+            pretrained_dict = torch.hub.load_state_dict_from_url(urls["liberty"], map_location=map_location_to_cpu)
             self.load_state_dict(pretrained_dict, strict=True)
         self.eval()
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        KORNIA_CHECK_SHAPE(input, ["B", "1", "32", "32"])
         x = self.features(input)
         x = x.view(x.size(0), -1)
         x = self.descr(x)

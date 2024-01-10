@@ -1,11 +1,28 @@
-from typing import Tuple
+from __future__ import annotations
+
+import warnings
+from typing import Optional
 
 import torch
 
-import kornia
+from kornia.core import arange, ones_like, stack, where, zeros
+
+from .linalg import transform_points
+
+__all__ = [
+    "validate_bbox",
+    "validate_bbox3d",
+    "infer_bbox_shape",
+    "infer_bbox_shape3d",
+    "bbox_to_mask",
+    "bbox_to_mask3d",
+    "bbox_generator",
+    "bbox_generator3d",
+    "transform_bbox",
+    "nms",
+]
 
 
-@torch.jit.ignore
 def validate_bbox(boxes: torch.Tensor) -> bool:
     """Validate if a 2D bounding box usable or not. This function checks if the boxes are rectangular or not.
 
@@ -14,25 +31,27 @@ def validate_bbox(boxes: torch.Tensor) -> bool:
             of Bx4x2, where each box is defined in the following ``clockwise`` order: top-left, top-right, bottom-right,
             bottom-left. The coordinates must be in the x, y order.
     """
-    if not (len(boxes.shape) == 3 and boxes.shape[1:] == torch.Size([4, 2])):
-        raise AssertionError(f"Box shape must be (B, 4, 2). Got {boxes.shape}.")
+    if not (len(boxes.shape) in [3, 4] and boxes.shape[-2:] == torch.Size([4, 2])):
+        raise AssertionError(f"Box shape must be (B, 4, 2) or (B, N, 4, 2). Got {boxes.shape}.")
 
-    if not torch.allclose((boxes[:, 1, 0] - boxes[:, 0, 0] + 1), (boxes[:, 2, 0] - boxes[:, 3, 0] + 1)):
+    if len(boxes.shape) == 4:
+        boxes = boxes.view(-1, 4, 2)
+
+    if not torch.allclose((boxes[:, 1, 0] - boxes[:, 0, 0] + 1), (boxes[:, 2, 0] - boxes[:, 3, 0] + 1), atol=1e-4):
         raise ValueError(
-            "Boxes must have be rectangular, while get widths %s and %s"
-            % (str(boxes[:, 1, 0] - boxes[:, 0, 0] + 1), str(boxes[:, 2, 0] - boxes[:, 3, 0] + 1))
+            f"Boxes must have be rectangular, while get widths {boxes[:, 1, 0] - boxes[:, 0, 0] + 1!s}"
+            f" and {boxes[:, 2, 0] - boxes[:, 3, 0] + 1!s}"
         )
 
-    if not torch.allclose((boxes[:, 2, 1] - boxes[:, 0, 1] + 1), (boxes[:, 3, 1] - boxes[:, 1, 1] + 1)):
+    if not torch.allclose((boxes[:, 2, 1] - boxes[:, 0, 1] + 1), (boxes[:, 3, 1] - boxes[:, 1, 1] + 1), atol=1e-4):
         raise ValueError(
-            "Boxes must have be rectangular, while get heights %s and %s"
-            % (str(boxes[:, 2, 1] - boxes[:, 0, 1] + 1), str(boxes[:, 3, 1] - boxes[:, 1, 1] + 1))
+            f"Boxes must be rectangular, while getting heights {boxes[:, 2, 1] - boxes[:, 0, 1] + 1!s}"
+            f" and {boxes[:, 3, 1] - boxes[:, 1, 1] + 1!s}"
         )
 
     return True
 
 
-@torch.jit.ignore
 def validate_bbox3d(boxes: torch.Tensor) -> bool:
     """Validate if a 3D bounding box usable or not. This function checks if the boxes are cube or not.
 
@@ -42,8 +61,11 @@ def validate_bbox3d(boxes: torch.Tensor) -> bool:
             front-bottom-right, front-bottom-left, back-top-left, back-top-right, back-bottom-right, back-bottom-left.
             The coordinates must be in the x, y, z order.
     """
-    if not (len(boxes.shape) == 3 and boxes.shape[1:] == torch.Size([8, 3])):
-        raise AssertionError(f"Box shape must be (B, 8, 3). Got {boxes.shape}.")
+    if not (len(boxes.shape) in [3, 4] and boxes.shape[-2:] == torch.Size([8, 3])):
+        raise AssertionError(f"Box shape must be (B, 8, 3) or (B, N, 8, 3). Got {boxes.shape}.")
+
+    if len(boxes.shape) == 4:
+        boxes = boxes.view(-1, 8, 3)
 
     left = torch.index_select(boxes, 1, torch.tensor([1, 2, 5, 6], device=boxes.device, dtype=torch.long))[:, :, 0]
     right = torch.index_select(boxes, 1, torch.tensor([0, 3, 4, 7], device=boxes.device, dtype=torch.long))[:, :, 0]
@@ -64,7 +86,7 @@ def validate_bbox3d(boxes: torch.Tensor) -> bool:
     return True
 
 
-def infer_bbox_shape(boxes: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def infer_bbox_shape(boxes: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     r"""Auto-infer the output sizes for the given 2D bounding boxes.
 
     Args:
@@ -97,7 +119,7 @@ def infer_bbox_shape(boxes: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     return height, width
 
 
-def infer_bbox_shape3d(boxes: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def infer_bbox_shape3d(boxes: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     r"""Auto-infer the output sizes for the given 3D bounding boxes.
 
     Args:
@@ -176,26 +198,18 @@ def bbox_to_mask(boxes: torch.Tensor, width: int, height: int) -> torch.Tensor:
                  [0., 0., 0., 0., 0.]]])
     """
     validate_bbox(boxes)
-    # zero padding the surroudings
-    mask = torch.zeros((len(boxes), height + 2, width + 2))
+    # zero padding the surroundings
+    mask = zeros((len(boxes), height + 2, width + 2), dtype=boxes.dtype, device=boxes.device)
     # push all points one pixel off
     # in order to zero-out the fully filled rows or columns
-    boxes += 1
-
-    mask_out = []
-    # TODO: Looking for a vectorized way
-    for m, box in zip(mask, boxes):
-        m = m.index_fill(1, torch.arange(box[0, 0].item(), box[1, 0].item() + 1, dtype=torch.long), torch.tensor(1))
-        m = m.index_fill(0, torch.arange(box[1, 1].item(), box[2, 1].item() + 1, dtype=torch.long), torch.tensor(1))
-        m = m.unsqueeze(dim=0)
-        m_out = (m == 1).all(dim=1) * (m == 1).all(dim=2).T
-        m_out = m_out[1:-1, 1:-1]
-        mask_out.append(m_out)
-
-    return torch.stack(mask_out, dim=0).float()
+    box_i = (boxes + 1).long()
+    # set all pixels within box to 1
+    for msk, bx in zip(mask, box_i):
+        msk[bx[0, 1] : bx[2, 1] + 1, bx[0, 0] : bx[1, 0] + 1] = 1.0
+    return mask[:, 1:-1, 1:-1]
 
 
-def bbox_to_mask3d(boxes: torch.Tensor, size: Tuple[int, int, int]) -> torch.Tensor:
+def bbox_to_mask3d(boxes: torch.Tensor, size: tuple[int, int, int]) -> torch.Tensor:
     """Convert 3D bounding boxes to masks. Covered area is 1. and the remaining is 0.
 
     Args:
@@ -245,34 +259,34 @@ def bbox_to_mask3d(boxes: torch.Tensor, size: Tuple[int, int, int]) -> torch.Ten
                    [0., 0., 0., 0., 0.]]]]])
     """
     validate_bbox3d(boxes)
-    mask = torch.zeros((len(boxes), *size))
+    mask = zeros((len(boxes), *size))
 
     mask_out = []
     # TODO: Looking for a vectorized way
     for m, box in zip(mask, boxes):
         m = m.index_fill(
             0,
-            torch.arange(box[0, 2].item(), box[4, 2].item() + 1, device=box.device, dtype=torch.long),
+            arange(box[0, 2].item(), box[4, 2].item() + 1, device=box.device, dtype=torch.long),
             torch.tensor(1, device=box.device, dtype=box.dtype),
         )
         m = m.index_fill(
             1,
-            torch.arange(box[1, 1].item(), box[2, 1].item() + 1, device=box.device, dtype=torch.long),
+            arange(box[1, 1].item(), box[2, 1].item() + 1, device=box.device, dtype=torch.long),
             torch.tensor(1, device=box.device, dtype=box.dtype),
         )
         m = m.index_fill(
             2,
-            torch.arange(box[0, 0].item(), box[1, 0].item() + 1, device=box.device, dtype=torch.long),
+            arange(box[0, 0].item(), box[1, 0].item() + 1, device=box.device, dtype=torch.long),
             torch.tensor(1, device=box.device, dtype=box.dtype),
         )
         m = m.unsqueeze(dim=0)
-        m_out = torch.ones_like(m)
+        m_out = ones_like(m)
         m_out = m_out * (m == 1).all(dim=2, keepdim=True).all(dim=1, keepdim=True)
         m_out = m_out * (m == 1).all(dim=3, keepdim=True).all(dim=1, keepdim=True)
         m_out = m_out * (m == 1).all(dim=2, keepdim=True).all(dim=3, keepdim=True)
         mask_out.append(m_out)
 
-    return torch.stack(mask_out, dim=0).float()
+    return stack(mask_out, dim=0).float()
 
 
 def bbox_generator(
@@ -427,17 +441,22 @@ def bbox_generator3d(
     return bbox
 
 
-def transform_bbox(trans_mat: torch.Tensor, boxes: torch.Tensor, mode: str = "xyxy") -> torch.Tensor:
-    r"""Function that applies a transformation matrix to a box or batch of boxes. Boxes must
-    be a tensor of the shape (N, 4) or a batch of boxes (B, N, 4) and trans_mat must be a (3, 3)
-    transformation matrix or a batch of transformation matrices (B, 3, 3)
+def transform_bbox(
+    trans_mat: torch.Tensor, boxes: torch.Tensor, mode: str = "xyxy", restore_coordinates: Optional[bool] = None
+) -> torch.Tensor:
+    r"""Apply a transformation matrix to a box or batch of boxes.
 
     Args:
-        trans_mat: The transformation matrix to be applied
-        boxes: The boxes to be transformed
+        trans_mat: The transformation matrix to be applied with a shape of :math:`(3, 3)`
+            or batched as :math:`(B, 3, 3)`.
+        boxes: The boxes to be transformed with a common shape of :math:`(N, 4)` or batched as :math:`(B, N, 4)`, the
+            polygon shape of :math:`(B, N, 4, 2)` is also supported.
         mode: The format in which the boxes are provided. If set to 'xyxy' the boxes are assumed to be in the format
             ``xmin, ymin, xmax, ymax``. If set to 'xywh' the boxes are assumed to be in the format
             ``xmin, ymin, width, height``
+        restore_coordinates: In case the boxes are flipped, adding a post processing step to restore the
+            coordinates to a valid bounding box.
+
     Returns:
         The set of transformed points in the specified mode
     """
@@ -448,16 +467,92 @@ def transform_bbox(trans_mat: torch.Tensor, boxes: torch.Tensor, mode: str = "xy
     if mode not in ("xyxy", "xywh"):
         raise ValueError(f"Mode must be one of 'xyxy', 'xywh'. Got {mode}")
 
+    # (B, N, 4, 2) shaped polygon boxes do not need to be restored.
+    if restore_coordinates is None and not (boxes.shape[-2:] == torch.Size([4, 2])):
+        warnings.warn(
+            "Previous behaviour produces incorrect box coordinates if a flip transformation performed on boxes."
+            "The previous wrong behaviour has been corrected and will be removed in the future versions."
+            "If you wish to keep the previous behaviour, please set `restore_coordinates=False`."
+            "Otherwise, set `restore_coordinates=True` as an acknowledgement."
+        )
+
     # convert boxes to format xyxy
     if mode == "xywh":
-        boxes[..., -2] = boxes[..., 0] + boxes[..., -2]  # x + w
-        boxes[..., -1] = boxes[..., 1] + boxes[..., -1]  # y + h
+        boxes[..., 2] = boxes[..., 0] + boxes[..., 2]  # x + w
+        boxes[..., 3] = boxes[..., 1] + boxes[..., 3]  # y + h
 
-    transformed_boxes: torch.Tensor = kornia.transform_points(trans_mat, boxes.view(boxes.shape[0], -1, 2))
+    transformed_boxes: torch.Tensor = transform_points(trans_mat, boxes.view(boxes.shape[0], -1, 2))
     transformed_boxes = transformed_boxes.view_as(boxes)
 
-    if mode == 'xywh':
+    if (restore_coordinates is None or restore_coordinates) and not (boxes.shape[-2:] == torch.Size([4, 2])):
+        restored_boxes = transformed_boxes.clone()
+        # In case the boxes are flipped, we ensure it is ordered like left-top -> right-bot points
+        restored_boxes[..., 0] = torch.min(transformed_boxes[..., [0, 2]], dim=-1)[0]
+        restored_boxes[..., 1] = torch.min(transformed_boxes[..., [1, 3]], dim=-1)[0]
+        restored_boxes[..., 2] = torch.max(transformed_boxes[..., [0, 2]], dim=-1)[0]
+        restored_boxes[..., 3] = torch.max(transformed_boxes[..., [1, 3]], dim=-1)[0]
+        transformed_boxes = restored_boxes
+
+    if mode == "xywh":
         transformed_boxes[..., 2] = transformed_boxes[..., 2] - transformed_boxes[..., 0]
         transformed_boxes[..., 3] = transformed_boxes[..., 3] - transformed_boxes[..., 1]
 
     return transformed_boxes
+
+
+def nms(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float) -> torch.Tensor:
+    """Perform non-maxima suppression (NMS) on a given tensor of bounding boxes according to the intersection-over-
+    union (IoU).
+
+    Args:
+        boxes: tensor containing the encoded bounding boxes with the shape :math:`(N, (x_1, y_1, x_2, y_2))`.
+        scores: tensor containing the scores associated to each bounding box with shape :math:`(N,)`.
+        iou_threshold: the throshold to discard the overlapping boxes.
+
+    Return:
+        A tensor mask with the indices to keep from the input set of boxes and scores.
+
+    Example:
+        >>> boxes = torch.tensor([
+        ...     [10., 10., 20., 20.],
+        ...     [15., 5., 15., 25.],
+        ...     [100., 100., 200., 200.],
+        ...     [100., 100., 200., 200.]])
+        >>> scores = torch.tensor([0.9, 0.8, 0.7, 0.9])
+        >>> nms(boxes, scores, iou_threshold=0.8)
+        tensor([0, 3, 1])
+    """
+    if len(boxes.shape) != 2 and boxes.shape[-1] != 4:
+        raise ValueError(f"boxes expected as Nx4. Got: {boxes.shape}.")
+
+    if len(scores.shape) != 1:
+        raise ValueError(f"scores expected as N. Got: {scores.shape}.")
+
+    if boxes.shape[0] != scores.shape[0]:
+        raise ValueError(f"boxes and scores mus have same shape. Got: {boxes.shape, scores.shape}.")
+
+    x1, y1, x2, y2 = boxes.unbind(-1)
+    areas = (x2 - x1) * (y2 - y1)
+
+    _, order = scores.sort(descending=True)
+
+    keep = []
+    while order.shape[0] > 0:
+        i = order[0]
+        keep.append(i)
+        xx1 = torch.max(x1[i], x1[order[1:]])
+        yy1 = torch.max(y1[i], y1[order[1:]])
+        xx2 = torch.min(x2[i], x2[order[1:]])
+        yy2 = torch.min(y2[i], y2[order[1:]])
+
+        w = torch.clamp(xx2 - xx1, min=0.0)
+        h = torch.clamp(yy2 - yy1, min=0.0)
+        inter = w * h
+        ovr = inter / (areas[i] + areas[order[1:]] - inter)
+
+        inds = where(ovr <= iou_threshold)[0]
+        order = order[inds + 1]
+
+    if len(keep) > 0:
+        return stack(keep)
+    return torch.tensor(keep)

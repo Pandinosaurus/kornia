@@ -1,8 +1,7 @@
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
+from torch import nn, optim
 
 import kornia
 
@@ -22,7 +21,6 @@ class TestWarping:
     num_iterations = 100
 
     def test_smoke(self, device):
-
         img_src_t: torch.Tensor = torch.rand(1, 3, 120, 120).to(device)
         img_dst_t: torch.Tensor = torch.rand(1, 3, 120, 120).to(device)
 
@@ -31,7 +29,7 @@ class TestWarping:
         ).float()
 
         height, width = img_dst_t.shape[-2:]
-        warper = kornia.HomographyWarper(height, width)
+        warper = kornia.geometry.transform.HomographyWarper(height, width)
         dst_homo_src = MyHomography(init_homo=init_homo).to(device)
 
         learning_rate = self.lr
